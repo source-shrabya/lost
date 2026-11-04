@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lost · Professor</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <div class="row" style="justify-content:space-between">
+    <div>
+      <h1>Lost <span id="phaseTag" class="tag"></span></h1>
+      <p class="muted" id="joinHint">Students go to <b id="url"></b> and type the code.</p>
+    </div>
+    <div style="text-align:right">
+      <div class="code" id="code">····</div>
+      <div class="muted"><span id="joined">0</span> joined · <span id="clock">0:00</span></div>
+    </div>
+  </div>
+
+  <div class="row" style="margin-top:12px">
+    <button class="primary" id="start">Start class</button>
+    <button id="mic" disabled>Mic: off</button>
+    <button id="end" disabled>End class</button>
+    <button id="reset">New class</button>
+  </div>
+
+  <div class="grid">
+    <section class="card">
+      <h2>Live transcript</h2>
+      <div id="transcript" aria-live="off"></div>
+      <p id="interim"></p>
+      <form id="typeForm" class="row">
+        <input id="typed" style="flex:1" placeholder="Mic not working? Type what you're saying and press Enter">
+      </form>
+      <p class="muted" id="micErr"></p>
+    </section>
+    <aside class="card">
+      <h2>Taps this class</h2>
+      <svg id="timeline" viewBox="0 0 300 70" preserveAspectRatio="none" role="img" aria-label="Taps over time"></svg>
+      <p class="muted" style="font-size:13px">Each bar is 15 seconds.</p>
+      <h2 style="margin-top:20px">Demo mode <span class="tag demo">FAKE DATA</span></h2>
+      <p class="muted" style="font-size:14px">For when the room is too loud or there's only one tester. Everything here is labelled fake.</p>
+      <div class="row">
+        <button id="playLecture" disabled>Play sample lecture</button>
+        <button id="addStudents">+10 fake students</button>
+        <button id="fakeTaps" disabled>5 fake taps now</button>
+      </div>
+    </aside>
+  </div>
+
+  <section id="reportCard" class="card" style="margin-top:16px" hidden>
+    <div class="row" style="justify-content:space-between">
+      <h2>After-class report</h2>
+      <button class="primary" id="send">Send catch-up to students</button>
+    </div>
+    <p class="muted" id="aiNote"></p>
+    <div id="moments"></div>
+  </section>
+</main>
+
+<div class="counter" id="counter">0 lost right now</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const post = (url, data = {}) => fetch(url, { method: "POST", body: JSON.stringify(data) }).then((r) => r.json());
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const fmt = (t) => { const s = Math.max(0, Math.round(t)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+
+$("#url").textContent = location.hostname === "localhost" ? "the student link printed in the terminal" : location.origin;
+
+let state = null, lastLines = "", lastReport = "";
+
+function render(s) {
+  state = s;
+  $("#code").textContent = s.code;
+  $("#joined").textContent = s.joined;
+  $("#clock").textContent = fmt(s.elapsed);
+  $("#phaseTag").textContent = { waiting: "not started", live: "LIVE", ended: "ended" }[s.phase];
+  $("#phaseTag").className = "tag" + (s.phase === "live" ? " live" : "");
+  $("#start").disabled = s.phase !== "waiting";
+  $("#end").disabled = s.phase !== "live";
+  $("#mic").disabled = s.phase !== "live" || !Rec;
+  $("#playLecture").disabled = s.phase !== "live";
+  $("#fakeTaps").disabled = s.phase !== "live";
+  if (s.phase !== "live" && listening) stopMic();
+
+  const pct = Math.round(s.share * 100);
+  $("#counter").textContent = s.lostCount ? `${s.lostCount} of ${s.joined} lost right now (${pct}%)` : "Nobody lost right now";
+  $("#counter").className = "counter" + (s.alert ? " alert" : "");
+  $("#counter").hidden = s.phase !== "live";
+
+  const linesKey = s.lines.length + ":" + (s.lines.at(-1)?.text || "");
+  if (linesKey !== lastLines) {
+    lastLines = linesKey;
+    const box = $("#transcript");
+    box.innerHTML = s.lines.map((l) => `<p><time>${fmt(l.t)}</time>${esc(l.text)}</p>`).join("");
+    box.scrollTop = box.scrollHeight;
+  }
+  drawTimeline(s);
+  renderReport(s.report);
+}
+
+function drawTimeline(s) {
+  const bucket = 15, n = Math.max(12, Math.ceil(s.elapsed / bucket));
+  const counts = Array(n).fill(0);
+  s.taps.forEach((t) => counts[Math.min(n - 1, Math.floor(t / bucket))]++);
+  const max = Math.max(3, ...counts), w = 300 / n;
+  $("#timeline").innerHTML = counts.map((c, i) =>
+    `<rect x="${i * w + 1}" y="${70 - (c / max) * 66}" width="${w - 2}" height="${(c / max) * 66}" fill="var(--accent)"><title>${fmt(i * bucket)}: ${c} tap(s)</title></rect>`
+  ).join("") + `<line x1="0" y1="69.5" x2="300" y2="69.5" stroke="var(--line)"/>`;
+}
+
+function renderReport(r) {
+  $("#reportCard").hidden = !r;
+  if (!r) return;
+  const key = JSON.stringify(r);
+  if (key === lastReport) return; lastReport = key;
+  $("#aiNote").textContent = {
+    off: "Claude is off (no API key), so the report shows only what you said at each moment.",
+    working: "Claude is writing explanations…",
+    failed: "Claude didn't answer, so the report shows only what you said at each moment.",
+    done: "Explanations drafted by Claude. Read them before you send.",
+  }[r.aiStatus];
+  $("#send").disabled = r.sent || r.aiStatus === "working" || !r.moments.length;
+  $("#send").textContent = r.sent ? "Sent to students" : "Send catch-up to students";
+  $("#moments").innerHTML = r.moments.length ? r.moments.map((m) => `
+    <article class="moment">
+      <div class="row" style="justify-content:space-between">
+        <strong>Around ${m.at}${m.topic ? " · " + esc(m.topic) : ""}</strong>
+        <span>${m.count} student${m.count === 1 ? "" : "s"} (${Math.round(m.share * 100)}%)</span>
+      </div>
+      <div class="bar" style="margin:8px 0"><div style="width:${Math.round(m.share * 100)}%"></div></div>
+      <p class="said">"${esc(m.said)}"</p>
+      ${m.reteach ? `<p><b>Try next class:</b> ${esc(m.reteach)}</p>` : ""}
+      ${m.explanation ? `<details><summary>Catch-up students will get</summary><p>${esc(m.explanation)}</p><p><i>${esc(m.question)}</i> ${esc(m.answer)}</p></details>` : ""}
+      ${r.sent ? `<p class="muted">${m.stillConfused} still confused · ${m.unhelpful} said it didn't help</p>` : ""}
+    </article>`).join("") : `<p class="muted">Nobody tapped this class.</p>`;
+}
+
+// ---------- speech to text (Chrome) ----------
+const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, listening = false;
+if (!Rec) $("#micErr").textContent = "This browser has no speech-to-text. Use Chrome, or type below.";
+
+function startMic() {
+  rec = new Rec(); rec.continuous = true; rec.interimResults = true; rec.lang = "en-US";
+  rec.onresult = (e) => {
+    let interim = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i];
+      if (r.isFinal) post("/api/line", { text: r[0].transcript }); else interim += r[0].transcript;
+    }
+    $("#interim").textContent = interim;
+  };
+  rec.onerror = (e) => { if (e.error === "not-allowed") { $("#micErr").textContent = "Mic blocked. Allow it in Chrome's address bar, or type below."; stopMic(); } };
+  rec.onend = () => { if (listening) try { rec.start(); } catch {} }; // Chrome stops after silence; restart
+  listening = true; rec.start();
+  $("#mic").textContent = "Mic: on"; $("#micErr").textContent = "";
+}
+function stopMic() { listening = false; rec?.stop(); $("#mic").textContent = "Mic: off"; $("#interim").textContent = ""; }
+
+$("#start").onclick = async () => { await post("/api/start"); if (Rec) startMic(); };
+$("#mic").onclick = () => (listening ? stopMic() : startMic());
+$("#end").onclick = () => { stopMic(); post("/api/end"); };
+$("#reset").onclick = () => { stopMic(); lastReport = ""; post("/api/reset"); };
+$("#send").onclick = () => post("/api/send");
+$("#typeForm").onsubmit = (e) => { e.preventDefault(); const v = $("#typed").value.trim(); if (v) post("/api/line", { text: v }); $("#typed").value = ""; };
+
+// ---------- demo mode ----------
+const LECTURE = [
+  "Okay, today we're starting recursion.",
+  "A recursive function is a function that calls itself.",
+  "Every recursive function needs a base case, the point where it stops calling itself.",
+  "Let's look at factorial. Factorial of n is n times factorial of n minus one.",
+  "So factorial of 4 is 4 times factorial of 3, which is 3 times factorial of 2, and so on.",
+  "Now, each call gets pushed onto the call stack, and the stack unwinds once we hit the base case.",
+  "The return values propagate back up through each frame, so the multiplication actually happens on the way back.",
+  "If you forget the base case, the stack keeps growing until you get a stack overflow.",
+  "Next, let's compare that with doing the same thing using a loop.",
+];
+$("#playLecture").onclick = async () => {
+  $("#playLecture").disabled = true;
+  for (const line of LECTURE) { if (state?.phase !== "live") break; await post("/api/line", { text: line }); await new Promise((r) => setTimeout(r, 2500)); }
+};
+$("#addStudents").onclick = () => post("/api/demo-students", { n: 10 });
+$("#fakeTaps").onclick = () => post("/api/demo-taps", { n: 5 });
+
+const es = new EventSource("/events?role=prof");
+es.onmessage = (e) => render(JSON.parse(e.data));
+</script>
+</body>
+</html>

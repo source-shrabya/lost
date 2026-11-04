@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lost</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="student">
+  <section id="join" hidden>
+    <h1>Lost</h1>
+    <p class="muted">Type the code on your professor's screen.</p>
+    <form id="joinForm" class="row">
+      <input id="code" maxlength="4" autocomplete="off" autocapitalize="characters" placeholder="CODE" aria-label="Class code" required>
+      <button class="primary">Join</button>
+    </form>
+    <p id="joinErr" role="alert" style="color:var(--accent)"></p>
+  </section>
+
+  <section id="live" hidden>
+    <p class="muted" style="text-align:center" id="liveNote">Tap when you get lost. Nobody sees who tapped.</p>
+    <button class="lostbtn" id="lost">I'm lost</button>
+    <p id="ack" aria-live="polite"></p>
+  </section>
+
+  <section id="after" hidden>
+    <h1>Your lost moments</h1>
+    <div id="catchups"></div>
+  </section>
+</main>
+<script>
+let id = null;
+try { id = localStorage.getItem("lost-id"); } catch {}
+if (!id) { id = crypto.randomUUID(); try { localStorage.setItem("lost-id", id); } catch {} }
+
+const $ = (s) => document.querySelector(s);
+const post = (url, data) => fetch(url, { method: "POST", body: JSON.stringify({ id, ...data }) }).then((r) => r.json());
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+let joinedCode = null; try { joinedCode = localStorage.getItem("lost-code"); } catch {}
+let lastCatch = "";
+
+$("#joinForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const code = $("#code").value.trim().toUpperCase();
+  const r = await post("/api/join", { code });
+  if (!r.ok) { $("#joinErr").textContent = r.error; return; }
+  joinedCode = code; try { localStorage.setItem("lost-code", code); } catch {}
+};
+
+$("#lost").onclick = async () => {
+  const r = await post("/api/tap");
+  navigator.vibrate?.(40);
+  if (!r.counted && r.reason) { $("#ack").textContent = r.reason; return; }
+  const others = r.others;
+  $("#ack").textContent = (r.counted ? "Marked. " : "Already marked. ") +
+    (others ? `You and ${others} other${others === 1 ? "" : "s"}. ` : "") + "Keep listening, you'll get a catch-up after class.";
+  clearTimeout(window.ackT); window.ackT = setTimeout(() => ($("#ack").textContent = ""), 6000);
+};
+
+function render(s) {
+  // rejoin automatically after a server restart or new class (code changes)
+  if (!s.joined && joinedCode && joinedCode === s.code) post("/api/join", { code: joinedCode });
+  const joined = s.joined;
+  $("#join").hidden = joined;
+  $("#live").hidden = !joined || s.phase === "ended" && s.sent;
+  $("#after").hidden = !(joined && s.phase === "ended" && s.sent);
+  $("#lost").disabled = s.phase !== "live";
+  $("#liveNote").textContent = s.phase === "waiting" ? "Waiting for class to start." :
+    s.phase === "ended" ? "Class is over. Your catch-up is on its way." : "Tap when you get lost. Nobody sees who tapped.";
+  if (s.catchup) {
+    const key = JSON.stringify(s.catchup.map((m) => [m.index, m.explanation]));
+    if (key === lastCatch) return; lastCatch = key;
+    $("#catchups").innerHTML = s.catchup.length ? s.catchup.map((m) => `
+      <article class="card catch">
+        <p class="muted">Around ${m.at}${m.topic ? " · " + esc(m.topic) : ""}</p>
+        ${m.explanation ? `<p>${esc(m.explanation)}</p>` : ""}
+        <details ${m.explanation ? "" : "open"}><summary>What the professor said</summary><p class="said">${esc(m.said)}</p></details>
+        ${m.question ? `<details><summary>Practice: ${esc(m.question)}</summary><p>${esc(m.answer)}</p></details>` : ""}
+        <div class="row" style="margin-top:12px">
+          <button data-i="${m.index}" data-k="still">Still confused</button>
+          <button data-i="${m.index}" data-k="unhelpful">This didn't help</button>
+        </div>
+      </article>`).join("") : `<p class="muted">You didn't tap today. Nothing to catch up on.</p>`;
+  }
+}
+
+$("#catchups").onclick = async (e) => {
+  const b = e.target.closest("button[data-i]"); if (!b) return;
+  await post("/api/feedback", { index: Number(b.dataset.i), kind: b.dataset.k === "unhelpful" ? "unhelpful" : "still" });
+  b.disabled = true; b.textContent = "Sent to your professor";
+};
+
+// EventSource reconnects by itself if the Wi-Fi drops
+const es = new EventSource(`/events?role=student&id=${id}`);
+es.onmessage = (e) => render(JSON.parse(e.data));
+es.onerror = () => ($("#ack").textContent = "Reconnecting…");
+es.onopen = () => ($("#ack").textContent = "");
+</script>
+</body>
+</html>
