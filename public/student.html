@@ -19,6 +19,10 @@
   </section>
 
   <section id="live" hidden>
+    <div id="videoBox" hidden style="position:relative">
+      <video id="video" autoplay playsinline style="width:100%;border-radius:12px;background:#000"></video>
+      <button id="unmute" class="primary" hidden style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)">Tap for sound</button>
+    </div>
     <p class="muted" style="text-align:center" id="liveNote">Tap when you get lost. Nobody sees who tapped.</p>
     <button class="lostbtn" id="lost">I'm lost</button>
     <p id="ack" aria-live="polite"></p>
@@ -32,7 +36,8 @@
 <script>
 let id = null;
 try { id = localStorage.getItem("lost-id"); } catch {}
-if (!id) { id = crypto.randomUUID(); try { localStorage.setItem("lost-id", id); } catch {} }
+// crypto.randomUUID only exists on https/localhost, and students load this page over plain http
+if (!id) { id = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join(""); try { localStorage.setItem("lost-id", id); } catch {} }
 
 const $ = (s) => document.querySelector(s);
 const post = (url, data) => fetch(url, { method: "POST", body: JSON.stringify({ id, ...data }) }).then((r) => r.json());
@@ -91,11 +96,47 @@ $("#catchups").onclick = async (e) => {
   b.disabled = true; b.textContent = "Sent to your professor";
 };
 
+// ---------- professor's camera + mic (WebRTC) ----------
+let pc = null;
+const signal = (data) => post("/api/signal", { from: id, to: "prof", data });
+
+async function onOffer(data) {
+  pc?.close();
+  pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+  const call = data.call;
+  pc.call = call; pc.pending = [];
+  pc.onicecandidate = (e) => e.candidate && signal({ call, candidate: e.candidate });
+  pc.ontrack = (e) => {
+    const v = $("#video");
+    if (v.srcObject !== e.streams[0]) v.srcObject = e.streams[0];
+    $("#videoBox").hidden = false;
+    v.muted = false;
+    // Browsers block sound until the page has been clicked; offer a button if that happens.
+    v.play().catch(() => { v.muted = true; v.play(); $("#unmute").hidden = false; });
+  };
+  pc.onconnectionstatechange = () => { if (["closed", "failed"].includes(pc.connectionState)) $("#videoBox").hidden = true; };
+  const mine = pc;
+  await mine.setRemoteDescription(data.sdp);
+  for (const c of mine.pending.splice(0)) mine.addIceCandidate(c).catch(() => {});
+  await mine.setLocalDescription(await mine.createAnswer());
+  if (pc !== mine) return; // a newer call replaced this one
+  signal({ call, sdp: pc.localDescription });
+}
+$("#unmute").onclick = () => { const v = $("#video"); v.muted = false; v.play(); $("#unmute").hidden = true; };
+
 // EventSource reconnects by itself if the Wi-Fi drops
 const es = new EventSource(`/events?role=student&id=${id}`);
 es.onmessage = (e) => render(JSON.parse(e.data));
+es.addEventListener("signal", (e) => {
+  const { data } = JSON.parse(e.data);
+  if (data.sdp) onOffer(data);
+  else if (data.candidate && pc && pc.call === data.call) {
+    if (pc.remoteDescription) pc.addIceCandidate(data.candidate).catch(() => {});
+    else pc.pending.push(data.candidate);
+  }
+});
 es.onerror = () => ($("#ack").textContent = "Reconnecting…");
-es.onopen = () => ($("#ack").textContent = "");
+es.onopen = () => { $("#ack").textContent = ""; signal({ hello: true }); };
 </script>
 </body>
 </html>

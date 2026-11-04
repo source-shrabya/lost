@@ -38,6 +38,10 @@ It uses `claude-opus-5-5` with the server-side refusal fallback turned on, so if
 4. Professor clicks End class. The report groups taps that came within 45 seconds of each other into one moment, and shows what was said in the 90 seconds before.
 5. Professor reads it and clicks Send catch-up to students. Each student only gets the moments they tapped. They can answer "Still confused" or "This didn't help", and those counts show up in the report.
 
+## Live camera and mic
+
+For a demo where the student isn't in the same room, the professor clicks "Share camera + mic" and Chrome asks for permission. Each student who has joined gets the professor's video and sound at the top of their screen, sent straight from laptop to laptop over WebRTC. The Lost server only passes the connection setup messages. If the browser blocks sound, the student sees a "Tap for sound" button. Both laptops still need to be on the same Wi-Fi.
+
 ## Demo mode
 
 The yellow FAKE DATA panel is for loud rooms and for testing alone. "Play sample lecture" types a short recursion lecture into the transcript. "+10 fake students" and "5 fake taps now" add made-up students. Say out loud in the demo when you use it.

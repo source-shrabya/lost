@@ -22,6 +22,7 @@
   <div class="row" style="margin-top:12px">
     <button class="primary" id="start">Start class</button>
     <button id="mic" disabled>Mic: off</button>
+    <button id="cam">Share camera + mic: off</button>
     <button id="end" disabled>End class</button>
     <button id="reset">New class</button>
   </div>
@@ -37,6 +38,10 @@
       <p class="muted" id="micErr"></p>
     </section>
     <aside class="card">
+      <div id="camBox" hidden style="margin-bottom:16px">
+        <video id="preview" autoplay muted playsinline style="width:100%;border-radius:8px;background:#000"></video>
+        <p class="muted" style="font-size:13px" id="camNote"></p>
+      </div>
       <h2>Taps this class</h2>
       <svg id="timeline" viewBox="0 0 300 70" preserveAspectRatio="none" role="img" aria-label="Taps over time"></svg>
       <p class="muted" style="font-size:13px">Each bar is 15 seconds.</p>
@@ -187,8 +192,63 @@ $("#playLecture").onclick = async () => {
 $("#addStudents").onclick = () => post("/api/demo-students", { n: 10 });
 $("#fakeTaps").onclick = () => post("/api/demo-taps", { n: 5 });
 
+// ---------- live camera + mic to students (WebRTC, one connection per student) ----------
+let stream = null;
+const pcs = new Map(); // student id -> RTCPeerConnection
+const ICE = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+const signal = (to, data) => post("/api/signal", { from: "prof", to, data });
+
+let callSeq = 0;
+async function callStudent(id) {
+  pcs.get(id)?.close();
+  const pc = new RTCPeerConnection(ICE);
+  pc.call = ++callSeq; pc.pending = [];   // call id lets us ignore replies to an older call
+  pcs.set(id, pc);
+  stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+  pc.onicecandidate = (e) => e.candidate && signal(id, { call: pc.call, candidate: e.candidate });
+  pc.onconnectionstatechange = updateCamNote;
+  await pc.setLocalDescription(await pc.createOffer());
+  signal(id, { call: pc.call, sdp: pc.localDescription });
+}
+function hangUpAll() { pcs.forEach((pc) => pc.close()); pcs.clear(); }
+function updateCamNote() {
+  const live = [...pcs.values()].filter((pc) => pc.connectionState === "connected").length;
+  $("#camNote").textContent = `Streaming to ${live} of ${pcs.size} student${pcs.size === 1 ? "" : "s"}.`;
+}
+function syncCalls(s) {
+  if (!stream) return;
+  for (const id of s.viewers) if (!pcs.has(id)) callStudent(id);
+  for (const [id, pc] of pcs) if (!s.viewers.includes(id)) { pc.close(); pcs.delete(id); }
+  updateCamNote();
+}
+
+$("#cam").onclick = async () => {
+  if (stream) {
+    hangUpAll(); stream.getTracks().forEach((t) => t.stop()); stream = null;
+    $("#camBox").hidden = true; $("#cam").textContent = "Share camera + mic: off"; return;
+  }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 }, audio: { echoCancellation: true, noiseSuppression: true } });
+  } catch (e) { $("#micErr").textContent = "Camera or mic blocked: " + e.message; return; }
+  $("#preview").srcObject = stream; $("#camBox").hidden = false;
+  $("#cam").textContent = "Share camera + mic: on";
+  if (state) syncCalls(state);
+};
+
 const es = new EventSource("/events?role=prof");
-es.onmessage = (e) => render(JSON.parse(e.data));
+es.onmessage = (e) => { const s = JSON.parse(e.data); render(s); syncCalls(s); };
+es.addEventListener("signal", async (e) => {
+  const { from, data } = JSON.parse(e.data);
+  if (data.hello) { if (stream && pcs.has(from)) callStudent(from); return; } // student reloaded: replace the stale call
+  const pc = pcs.get(from); if (!pc || data.call !== pc.call) return;
+  if (data.sdp) {
+    await pc.setRemoteDescription(data.sdp);
+    for (const c of pc.pending.splice(0)) pc.addIceCandidate(c).catch(() => {});
+  } else if (data.candidate) {
+    if (pc.remoteDescription) pc.addIceCandidate(data.candidate).catch(() => {});
+    else pc.pending.push(data.candidate); // arrived before the answer; add it once the answer is in
+  }
+});
 </script>
 </body>
 </html>

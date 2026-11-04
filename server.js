@@ -53,6 +53,7 @@ function profView() {
     code: S.code, phase: S.phase, elapsed: now(), joined,
     lostCount: lost.size, share, alert: lost.size > 0 && share >= ALERT_SHARE,
     lines: S.lines.slice(-40),
+    viewers: viewers(),
     taps: S.taps.map((x) => x.t),
     report: S.report && {
       ...S.report,
@@ -78,6 +79,12 @@ function studentView(id) {
 }
 
 function send(res, data) { res.write(`data: ${JSON.stringify(data)}\n\n`); }
+function sendSignal(res, data) { res.write(`event: signal\ndata: ${JSON.stringify(data)}\n\n`); }
+
+// Students with an open connection: the professor's page opens one video call per viewer.
+function viewers() {
+  return [...new Set([...clients.student.values()].filter((id) => S.students.has(id)))];
+}
 function broadcast() {
   const p = profView();
   for (const res of clients.prof) send(res, p);
@@ -206,6 +213,12 @@ const routes = {
     return {};
   },
   "POST /api/reset": async () => { reset(); return {}; },
+  // Relays WebRTC setup messages (offer, answer, network candidates) between professor and students.
+  "POST /api/signal": async (b) => {
+    if (b.to === "prof") for (const res of clients.prof) sendSignal(res, { from: b.from, data: b.data });
+    else for (const [res, id] of clients.student) if (id === b.to) sendSignal(res, { from: "prof", data: b.data });
+    return {};
+  },
 };
 
 const server = http.createServer(async (req, res) => {
@@ -218,7 +231,11 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   const handler = routes[`${req.method} ${url.pathname}`];
-  if (handler) { const out = await handler(await body(req)); json(res, out); broadcast(); return; }
+  if (handler) {
+    const out = await handler(await body(req)); json(res, out);
+    if (url.pathname !== "/api/signal") broadcast();
+    return;
+  }
 
   const page = { "/": "student.html", "/prof": "prof.html" }[url.pathname] || url.pathname.slice(1);
   const file = path.join(here, "public", path.normalize(page).replace(/^(\.\.[/\\])+/, ""));
