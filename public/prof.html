@@ -166,7 +166,8 @@ function startMic() {
   startSound();
   listening = true;
   $("#mic").textContent = "Mic on"; $("#mic").classList.add("on"); $("#micErr").textContent = Rec ? "" : $("#micErr").textContent;
-  if (!Rec) return;
+  // When the server transcribes with faster-whisper, Chrome's recognition stays off so lines aren't doubled.
+  if (!Rec || state?.transcriber === "whisper") { if (Rec) $("#micErr").textContent = ""; return; }
   rec = new Rec(); rec.continuous = true; rec.interimResults = true; rec.lang = "en-US";
   rec.onresult = (e) => {
     let interim = "";

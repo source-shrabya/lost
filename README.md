@@ -20,6 +20,36 @@ The terminal prints two links.
 
 If the student laptop can't load the page, macOS may be blocking incoming connections. Allow Node when the firewall asks, or check System Settings > Network > Firewall. Some campus Wi-Fi blocks laptop-to-laptop traffic. A phone hotspot works around that.
 
+## Transcript with faster-whisper (recommended)
+
+The transcript comes from [faster-whisper](https://github.com/SYSTRAN/faster-whisper), which runs on the professor laptop. No audio leaves the laptop for the transcript, and there are no API charges. Without it, Lost uses Chrome's built-in speech recognition, which is less accurate.
+
+One-time setup on the professor laptop. You need Python 3.9 or newer and ffmpeg.
+
+Mac:
+
+```
+brew install ffmpeg
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+Windows (PowerShell):
+
+```
+winget install ffmpeg
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+```
+
+Then `npm start` as usual. The first start downloads the model (about 480 MB), and the terminal says `faster-whisper (small.en) is ready` when it can transcribe. The professor's mic goes to Whisper once Start class is clicked. Lines show up 1 to 3 seconds after each pause.
+
+Options, set before `npm start`:
+
+- `LOST_TERMS="recursion, call stack, base case"` lists course words so Whisper spells them right.
+- `WHISPER_MODEL=base.en` is faster on slow laptops. `medium.en` is more accurate but may fall behind live speech on a laptop CPU. The default is `small.en`.
+- `WHISPER=off` goes back to Chrome's speech recognition.
+
 ## Claude explanations
 
 Without a key, the app still works, and the catch-up shows the transcript of what was said. With a key, Claude writes a short explanation, a practice question and a re-teach suggestion for the professor:
@@ -32,7 +62,7 @@ It uses `claude-opus-5-5` with the server-side refusal fallback turned on, so if
 
 ## Running a class
 
-1. Professor clicks Start class. The mic turns on, the transcript fills in, and the professor's sound is shared for students who aren't in the room. If the mic fails, type into the box under the transcript.
+1. Professor clicks Start class. The mic turns on, the transcript fills in (from faster-whisper if it's set up), and the professor's sound is shared for students who aren't in the room. If the mic fails, type into the box under the transcript.
 2. Students tap I'm lost and keep listening. The button confirms with "Marked. You and 2 others."
 3. Students can tap Show transcript to read what has been said so far. It stays hidden until they open it.
 4. Students who aren't in the room tap Listen to class. The sound goes through the Lost server, about 2 seconds behind, so it works across any two networks.

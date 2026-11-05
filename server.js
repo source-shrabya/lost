@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
 import Anthropic from "@anthropic-ai/sdk";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -91,6 +92,7 @@ function profView() {
     code: S.code, phase: S.phase, elapsed: now(), joined,
     lostCount: lost.size, share, alert: lost.size > 0 && share >= ALERT_SHARE,
     lines: linesFrom(S.lines.length - 40),
+    transcriber: whisper.ready ? "whisper" : "browser",
     taps: S.taps.map((x) => x.t),
     report: S.report && {
       ...S.report,
@@ -139,6 +141,50 @@ function readRaw(req, limit) {
     req.on("end", () => ok(Buffer.concat(parts)));
   });
 }
+
+// ---------- transcript from faster-whisper (runs on this computer) ----------
+// One Python process loads the model once. Each time the professor starts sharing, a new ffmpeg
+// turns that WebM stream into plain 16 kHz audio and feeds it to Python. Set WHISPER=off to use
+// Chrome's built-in speech recognition instead.
+const whisper = { proc: null, ready: false, ffmpeg: null };
+function startWhisper() {
+  // .venv/bin/python on Mac and Linux, .venv\Scripts\python.exe on Windows
+  const py = [path.join(here, ".venv", "bin", "python"), path.join(here, ".venv", "Scripts", "python.exe")].find((f) => fs.existsSync(f)) || "";
+  if (process.env.WHISPER === "off" || !fs.existsSync(py)) return;
+  const proc = spawn(py, [path.join(here, "transcribe.py")], { stdio: ["pipe", "pipe", "pipe"], env: process.env });
+  whisper.proc = proc;
+  let out = "";
+  proc.stdout.on("data", (d) => {
+    out += d; let nl;
+    while ((nl = out.indexOf("\n")) >= 0) {
+      const line = out.slice(0, nl); out = out.slice(nl + 1);
+      let msg; try { msg = JSON.parse(line); } catch { continue; }
+      if (msg.ready) { whisper.ready = true; console.log(`  Transcript: faster-whisper (${msg.model}) is ready`); }
+      else if (msg.text && S.phase === "live") {
+        // the audio reaches the server about a second after it was spoken
+        const t = Math.max(0, (msg.start * 1000 - S.startedAt) / 1000 - 1);
+        S.lines.push({ t, text: String(msg.text).slice(0, 1000) });
+        S.lines.sort((a, b) => a.t - b.t);
+      }
+    }
+  });
+  proc.stderr.on("data", (d) => { if (!/HF_TOKEN|unauthenticated/.test(d)) console.error("[whisper]", String(d).trim()); });
+  proc.stdin.on("error", () => {});
+  proc.on("exit", (code) => { console.error(`[whisper] stopped (code ${code}); falling back to Chrome speech recognition`); whisper.proc = null; whisper.ready = false; });
+}
+function whisperNewStream(header) {
+  whisperEndStream();
+  if (!whisper.ready) return;
+  const ff = spawn("ffmpeg", ["-loglevel", "error", "-fflags", "nobuffer", "-i", "pipe:0", "-f", "s16le", "-ac", "1", "-ar", "16000", "pipe:1"]);
+  ff.on("error", (e) => { console.error("[whisper] ffmpeg failed:", e.message); whisper.ffmpeg = null; });
+  ff.stdin.on("error", () => {});
+  ff.stdout.on("data", (d) => whisper.proc?.stdin.write(d));
+  ff.stdin.write(header);
+  whisper.ffmpeg = ff;
+}
+function whisperFeed(piece) { whisper.ffmpeg?.stdin.write(piece); }
+function whisperEndStream() { whisper.ffmpeg?.stdin.end(); whisper.ffmpeg = null; }
+startWhisper();
 
 // Pages check in every second (GET /api/poll). Streams were dropped because the Cloudflare
 // tunnel holds back streaming responses.
@@ -291,11 +337,11 @@ const server = http.createServer(async (req, res) => {
       if (!prof) { json(res, { error: "Professor only" }, 403); return; }
       const buf = await readRaw(req, 512 * 1024);
       if (!buf) { if (!res.headersSent) json(res, { error: "Too large" }, 413); return; }
-      if (url.searchParams.get("first") === "1") { relay.id++; relay.header = buf; relay.pieces.clear(); relay.seq = 0; }
-      else if (relay.header) { relay.seq++; relay.pieces.set(relay.seq, buf); relay.pieces.delete(relay.seq - 30); }
+      if (url.searchParams.get("first") === "1") { relay.id++; relay.header = buf; relay.pieces.clear(); relay.seq = 0; whisperNewStream(buf); }
+      else if (relay.header) { relay.seq++; relay.pieces.set(relay.seq, buf); relay.pieces.delete(relay.seq - 30); whisperFeed(buf); }
       json(res, { seq: relay.seq }); return;
     }
-    if (req.method === "DELETE") { if (prof) { relay.header = null; relay.pieces.clear(); relay.seq = -1; } json(res, {}); return; }
+    if (req.method === "DELETE") { if (prof) { relay.header = null; relay.pieces.clear(); relay.seq = -1; whisperEndStream(); } json(res, {}); return; }
     // students fetch a piece; only joined students
     const sid = url.searchParams.get("id");
     if (!S.students.has(sid) || !relay.header) { res.writeHead(404, SECURITY_HEADERS); res.end(); return; }
@@ -343,5 +389,6 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`  Professor (this laptop, use Chrome, keep this link private):`);
   console.log(`    http://localhost:${PORT}/prof?key=${PROF_KEY}`);
   for (const ip of ips) console.log(`  Students (same Wi-Fi):               http://${ip}:${PORT}`);
-  console.log(`\n  Claude explanations: ${ai ? "ON" : "OFF (set ANTHROPIC_API_KEY to turn on)"}\n`);
+  console.log(`\n  Claude explanations: ${ai ? "ON" : "OFF (set ANTHROPIC_API_KEY to turn on)"}`);
+  console.log(`  Transcript: ${whisper.proc ? "faster-whisper, loading the model…" : "Chrome speech recognition"}\n`);
 });
