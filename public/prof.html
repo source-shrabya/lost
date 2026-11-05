@@ -239,7 +239,7 @@ function syncCalls(s) {
 
 $("#cam").onclick = async () => {
   if (stream) {
-    hangUpAll(); stream.getTracks().forEach((t) => t.stop()); stream = null;
+    hangUpAll(); stopRelay(); stream.getTracks().forEach((t) => t.stop()); stream = null;
     $("#camBox").hidden = true; $("#cam").textContent = "Share camera + mic: off"; return;
   }
   const audio = { echoCancellation: true, noiseSuppression: true };
@@ -255,8 +255,33 @@ $("#cam").onclick = async () => {
   $("#preview").srcObject = stream; $("#preview").hidden = soundOnly; $("#camBox").hidden = false;
   $("#micErr").textContent = soundOnly ? "No camera found, so students get your sound only." : "";
   $("#cam").textContent = soundOnly ? "Sharing sound only: on" : "Share camera + mic: on";
+  startRelay();
   if (state) syncCalls(state);
 };
+
+// Backup audio: upload the mic in 1-second pieces through the Lost server, for students whose
+// direct connection can't get through their router. Uploads are chained so pieces arrive in order.
+let relayRec = null, relayChain = Promise.resolve();
+function startRelay() {
+  const tracks = stream.getAudioTracks();
+  if (!tracks.length || !window.MediaRecorder) return;
+  const type = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "";
+  if (!type) return; // Safari can't record WebM; students on this professor get the direct connection only
+  relayRec = new MediaRecorder(new MediaStream(tracks), { mimeType: type, audioBitsPerSecond: 32000 });
+  relayRec.onerror = (e) => console.error("[lost] backup audio recorder error", e.error);
+  let first = true;
+  relayRec.ondataavailable = (e) => {
+    if (!e.data.size) return;
+    const isFirst = first; first = false;
+    relayChain = relayChain.then(() => fetch(`/api/audio?first=${isFirst ? 1 : 0}`, { method: "POST", headers: { "x-prof-key": KEY }, body: e.data }).catch(() => {}));
+  };
+  relayRec.start(1000);
+}
+function stopRelay() {
+  if (relayRec && relayRec.state !== "inactive") relayRec.stop();
+  relayRec = null;
+  fetch("/api/audio", { method: "DELETE", headers: { "x-prof-key": KEY } });
+}
 
 if (!KEY) document.querySelector("main").innerHTML = "<h1>Professor link needed</h1><p class='muted'>Open the professor link printed in the terminal when the server started. It has a private key at the end.</p>";
 async function onSignal({ from, data }) {

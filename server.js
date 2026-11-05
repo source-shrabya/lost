@@ -112,7 +112,21 @@ function studentView(id) {
     joined: S.students.has(id),
     catchup: mine && mine.map(({ ids, ...m }) => m),
     sent: !!S.report?.sent,
+    audio: relay.header ? { id: relay.id, seq: relay.seq } : null,
   };
+}
+
+// ---------- backup audio relay ----------
+// The direct laptop-to-laptop call (WebRTC) often can't get through two home routers without a
+// paid relay server. As a backup, the professor's page uploads its sound in 1-second WebM pieces and
+// students fetch them. Piece 0 holds the file header every player needs first.
+const relay = { id: 0, seq: -1, header: null, pieces: new Map() };
+function readRaw(req, limit) {
+  return new Promise((ok) => {
+    const parts = []; let size = 0;
+    req.on("data", (c) => { size += c.length; if (size > limit) { ok(null); req.destroy(); } else parts.push(c); });
+    req.on("end", () => ok(Buffer.concat(parts)));
+  });
 }
 
 // Pages check in every second (GET /api/poll). Streams were dropped because the Cloudflare
@@ -272,6 +286,25 @@ const server = http.createServer(async (req, res) => {
   try { url = new URL(req.url, "http://x"); } catch { res.writeHead(400); res.end(); return; }
   const prof = isProf(req, url);
   if (!prof && !allowed(clientIp(req))) { res.writeHead(429, SECURITY_HEADERS); res.end("Slow down"); return; }
+
+  if (url.pathname === "/api/audio") {
+    if (req.method === "POST") { // professor uploads one piece
+      if (!prof) { json(res, { error: "Professor only" }, 403); return; }
+      const buf = await readRaw(req, 512 * 1024);
+      if (!buf) { if (!res.headersSent) json(res, { error: "Too large" }, 413); return; }
+      if (url.searchParams.get("first") === "1") { relay.id++; relay.header = buf; relay.pieces.clear(); relay.seq = 0; }
+      else if (relay.header) { relay.seq++; relay.pieces.set(relay.seq, buf); relay.pieces.delete(relay.seq - 30); }
+      json(res, { seq: relay.seq }); return;
+    }
+    if (req.method === "DELETE") { if (prof) { relay.header = null; relay.pieces.clear(); relay.seq = -1; } json(res, {}); return; }
+    // students fetch a piece; only joined students
+    const sid = url.searchParams.get("id");
+    if (!S.students.has(sid) || !relay.header) { res.writeHead(404, SECURITY_HEADERS); res.end(); return; }
+    const n = Number(url.searchParams.get("seq"));
+    const piece = n === 0 ? relay.header : relay.pieces.get(n);
+    if (!piece) { res.writeHead(404, SECURITY_HEADERS); res.end(); return; }
+    res.writeHead(200, { "content-type": "audio/webm", "cache-control": "no-store", ...SECURITY_HEADERS }); res.end(piece); return;
+  }
 
   if (url.pathname === "/api/poll" && req.method === "GET") {
     const role = url.searchParams.get("role");
