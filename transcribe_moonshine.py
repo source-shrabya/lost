@@ -24,7 +24,18 @@ CHUNK = RATE // 4 * 2   # 0.25 s of 16-bit audio, in bytes
 
 ARCHS = {"tiny": ModelArch.TINY_STREAMING, "small": ModelArch.SMALL_STREAMING, "medium": ModelArch.MEDIUM_STREAMING}
 size = os.environ.get("MOONSHINE_MODEL", "medium")
-terms = [t.strip() for t in os.environ.get("LOST_TERMS", "").split(",") if t.strip()]
+# Course terms: LOST_TERMS plus the professor's vocabulary, which the server writes to LOST_TERMS_FILE.
+# The file is checked every couple of seconds, so edits apply during class.
+def read_terms():
+    found = [t.strip() for t in os.environ.get("LOST_TERMS", "").split(",") if t.strip()]
+    try:
+        with open(os.environ.get("LOST_TERMS_FILE", ""), encoding="utf-8") as f:
+            found += [t.strip() for t in f if t.strip() and "," not in t]
+    except OSError:
+        pass
+    return list(dict.fromkeys(found))[:100]
+terms = read_terms()
+terms_checked = time.time()
 
 def say(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
@@ -66,6 +77,12 @@ while True:
         samples = np.frombuffer(buf[:CHUNK], dtype=np.int16).astype(np.float32) / 32768.0
         buf = buf[CHUNK:]
         fed += len(samples) / RATE
+        if time.time() - terms_checked > 2:
+            terms_checked = time.time()
+            latest = read_terms()
+            if latest != terms:
+                terms = latest
+                transcriber.set_keyterms(terms or None)
         try:
             transcriber.add_audio(samples.tolist(), RATE)
         except Exception as e:  # keep running; one bad pass shouldn't stop the class

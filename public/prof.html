@@ -35,6 +35,8 @@
         <button id="mic" class="tool" disabled>Mic off</button>
       </div>
       <p class="note" id="soundNote"></p>
+      <p class="note" id="engineStatus"></p>
+      <p class="note warn" id="audioWarn" role="status"></p>
       <div id="transcript" aria-live="off"></div>
       <p id="interim"></p>
       <form id="typeForm"><input id="typed" placeholder="Mic not picking you up? Type here and press Enter" aria-label="Type a line"></form>
@@ -55,6 +57,28 @@
     <p class="note" id="aiNote"></p>
     <div id="moments"></div>
   </section>
+
+  <details id="materials" class="materials">
+    <summary>Course materials <span class="note" id="matSummary"></span></summary>
+    <p class="note">Upload slides or notes so the transcript spells course words right. Lost sends only a short list of terms to the speech engine, as hints. It still writes what you actually say. Terms can't fix a noisy room or guarantee every accent; a mic close to you helps more.</p>
+    <div class="mat-row">
+      <label>Course <input id="courseName" placeholder="CSC 201"></label>
+      <label>Lecture <input id="lectureName" placeholder="Recursion"></label>
+    </div>
+    <div class="mat-row">
+      <label class="filebtn">Upload PDF, PPTX, DOCX or TXT<input type="file" id="files" accept=".pdf,.pptx,.docx,.txt" multiple hidden></label>
+      <span class="note" id="uploadNote" role="status"></span>
+    </div>
+    <details class="paste"><summary>Or paste lecture notes</summary>
+      <textarea id="notes" rows="5" aria-label="Lecture notes"></textarea>
+      <button id="addNotes">Add notes</button>
+    </details>
+    <div id="matList"></div>
+    <h3 class="mat-h">Your own terms</h3>
+    <p class="note">One per line. "term: meaning" is fine; only the term is sent.</p>
+    <textarea id="vocab" rows="5" aria-label="Your own terms"></textarea>
+    <p class="note" id="termsInUse"></p>
+  </details>
 
   <footer class="controls">
     <button id="reset" class="quiet">Start a new class</button>
@@ -101,23 +125,26 @@ function render(s) {
   $("#playLecture").disabled = s.phase !== "live";
   $("#fakeTaps").disabled = s.phase !== "live";
   if (s.phase !== "live" && (listening || stream)) stopMic();
-  // Whisper finished loading during class: hand the transcript over to it. Whisper stopped: Chrome takes over.
-  if (listening && s.transcriber === "whisper" && rec) { const r = rec; rec = null; r.onend = null; r.stop(); $("#interim").textContent = ""; }
-  if (listening && s.transcriber !== "whisper" && !rec && Rec) startRec();
-  $("#transcriber").textContent = s.transcriber === "whisper" ? `by ${s.transcriberName} on this laptop` : "by Chrome speech recognition";
-  if (s.transcriber === "whisper") $("#interim").textContent = s.interim;
+  // A speech engine on the server came up during class: hand the transcript over to it. It stopped: Chrome takes over.
+  if (listening && s.transcriber === "server" && rec) { const r = rec; rec = null; r.onend = null; r.stop(); $("#interim").textContent = ""; }
+  if (listening && s.transcriber !== "server" && !rec && Rec) startRec();
+  $("#transcriber").textContent = `by ${s.transcriberName}`;
+  $("#engineStatus").textContent = s.engineProblem || s.engineStatus;
+  $("#engineStatus").classList.toggle("warn", !!s.engineProblem);
+  if (s.transcriber === "server") $("#interim").textContent = s.interim;
+  renderMaterials(s);
 
   const pct = Math.round(s.share * 100);
   $("#counter").textContent = s.lostCount ? `${s.lostCount} of ${s.joined} lost right now (${pct}%)` : "Nobody lost right now";
   $("#counter").className = "counter" + (s.alert ? " alert" : "");
   $("#counter").hidden = s.phase !== "live";
 
-  const linesKey = s.lines.length + ":" + (s.lines.at(-1)?.text || "") + ":" + s.lines.map((l) => l.marks).join(",");
-  if (linesKey !== lastLines) {
+  const linesKey = s.lines.length + ":" + s.lines.map((l) => l.marks + l.text).join("|");
+  if (linesKey !== lastLines && !editing) {
     lastLines = linesKey;
     const box = $("#transcript");
     const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
-    box.innerHTML = s.lines.map((l) => `<p${l.marks ? ' class="marked"' : ""}><time>${fmt(l.t)}</time>${esc(l.text)}${l.marks ? ` <span class="lostmark">${l.marks} lost here</span>` : ""}</p>`).join("");
+    box.innerHTML = s.lines.map((l) => `<p data-i="${l.i}"${l.marks ? ' class="marked"' : ""} title="Double-click to fix a mistake"><time>${fmt(l.t)}</time><span class="words">${withUnsure(l)}</span>${l.original !== undefined ? ` <span class="edited" title="Original: ${esc(l.original)}">edited</span>` : ""}${l.marks ? ` <span class="lostmark">${l.marks} lost here</span>` : ""}</p>`).join("");
     if (atBottom) box.scrollTop = box.scrollHeight;
   }
   drawTimeline(s);
@@ -172,7 +199,7 @@ function startMic() {
   listening = true;
   $("#mic").textContent = "Mic on"; $("#mic").classList.add("on"); $("#micErr").textContent = Rec ? "" : $("#micErr").textContent;
   // When the server transcribes with faster-whisper, Chrome's recognition stays off so lines aren't doubled.
-  if (!Rec || state?.transcriber === "whisper") { if (Rec) $("#micErr").textContent = ""; return; }
+  if (!Rec || state?.transcriber === "server") { if (Rec) $("#micErr").textContent = ""; return; }
   startRec();
 }
 function startRec() {
@@ -227,7 +254,8 @@ $("#fakeTaps").onclick = () => post("/api/demo-taps", { n: 5 });
 let stream = null, relayRec = null, relayChain = Promise.resolve();
 async function startSound() {
   if (stream) return;
-  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+  // The browser's own echo cancellation, noise suppression and auto gain help a little with room noise.
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
   catch (e) { $("#soundNote").textContent = "Students can't listen: the mic is blocked (" + e.message + ")."; return; }
   const type = window.MediaRecorder && MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "";
   if (!type) { $("#soundNote").textContent = "Students can't listen from this browser. Use Chrome."; return; }
@@ -241,16 +269,116 @@ async function startSound() {
   };
   relayRec.start(1000);
   $("#soundNote").textContent = "Students who aren't in the room can listen.";
+  watchLevel(stream);
 }
 function stopSound() {
   if (relayRec && relayRec.state !== "inactive") relayRec.stop();
   relayRec = null;
   stream?.getTracks().forEach((t) => t.stop()); stream = null;
+  clearInterval(levelTimer); $("#audioWarn").textContent = "";
   fetch("/api/audio", { method: "DELETE", headers: { "x-prof-key": KEY } });
   $("#soundNote").textContent = "";
 }
 
 if (!KEY) document.querySelector("main").innerHTML = "<h1>Professor link needed</h1><p class='note'>Open the professor link printed in the terminal when the server started. It has a private key at the end.</p>";
+
+// ---------- transcript: unsure words and fixes ----------
+// Deepgram reports how sure it is of each word. Words under 0.6 get a dotted underline.
+function withUnsure(l) {
+  let html = esc(l.text);
+  for (const w of new Set(l.unsure || [])) {
+    const e = esc(w).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    html = html.replace(new RegExp(`(^|\\s)(${e})(?=\\s|$)`), `$1<span class="unsure" title="The speech engine wasn't sure about this word">$2</span>`);
+  }
+  return html;
+}
+let editing = false;
+$("#transcript").ondblclick = (e) => {
+  const p = e.target.closest("p[data-i]"); if (!p || editing) return;
+  editing = true;
+  const words = p.querySelector(".words");
+  const input = document.createElement("input");
+  input.value = words.textContent; input.className = "fix"; input.setAttribute("aria-label", "Fix this line");
+  words.replaceWith(input); input.focus();
+  const done = (save) => {
+    if (!editing) return; editing = false; lastLines = "";
+    if (save && input.value.trim() && input.value.trim() !== words.textContent) post("/api/line-edit", { i: Number(p.dataset.i), text: input.value.trim() });
+    else input.replaceWith(words);
+  };
+  input.onkeydown = (k) => { if (k.key === "Enter") done(true); if (k.key === "Escape") done(false); };
+  input.onblur = () => done(true);
+};
+
+// ---------- mic level warnings ----------
+let levelTimer = null;
+function watchLevel(s) {
+  try {
+    const ctx = new AudioContext(), an = ctx.createAnalyser(); an.fftSize = 2048;
+    ctx.createMediaStreamSource(s).connect(an);
+    const buf = new Float32Array(an.fftSize);
+    let quiet = 0, loud = 0;
+    clearInterval(levelTimer);
+    levelTimer = setInterval(() => {
+      an.getFloatTimeDomainData(buf);
+      let sum = 0, peak = 0; for (const v of buf) { sum += v * v; peak = Math.max(peak, Math.abs(v)); }
+      const rms = Math.sqrt(sum / buf.length);
+      quiet = rms < 0.004 ? quiet + 1 : 0;
+      loud = peak > 0.98 ? loud + 1 : Math.max(0, loud - 1);
+      $("#audioWarn").textContent = quiet > 16 ? "Your mic is very quiet. Check the mic input or move closer to it." :
+        loud > 6 ? "Your mic is too loud and clipping. Move it back a little." : "";
+    }, 500);
+  } catch {}
+}
+
+// ---------- course materials ----------
+let lastMat = "";
+const matBusy = () => document.activeElement && $("#materials").contains(document.activeElement) && /INPUT|TEXTAREA/.test(document.activeElement.tagName);
+function renderMaterials(s) {
+  const c = s.course; if (!c) return;
+  $("#matSummary").textContent = c.termsInUse ? `${c.termsInUse} terms in use` : "none yet";
+  $("#termsInUse").textContent = `${c.termsInUse} terms are sent to ${s.transcriberName} as hints${s.transcriber === "browser" ? " (Chrome's recognition can't use them; set up a speech engine from the README)" : ""}.`;
+  const key = JSON.stringify(c);
+  if (key === lastMat || matBusy()) return; lastMat = key;
+  $("#courseName").value = c.name; $("#lectureName").value = c.lecture; $("#vocab").value = c.vocab.join("\n");
+  $("#matList").innerHTML = c.materials.map((m) => `
+    <article class="mat" data-id="${m.id}">
+      <div class="mat-head">
+        <div><b>${esc(m.name)}</b><br><label class="use-label"><input type="checkbox" class="use" ${m.use ? "checked" : ""}>Use for this lecture</label></div>
+        <button class="quiet del">Delete</button>
+      </div>
+      <p class="note">${[m.pages ? `${m.pages} ${m.kind === "pptx" ? "slides" : "pages"}` : "", m.slideTitles ? `${m.slideTitles} titles` : "", m.speakerNotes ? `${m.speakerNotes} speaker notes` : "", `${m.chars.toLocaleString()} characters of text`].filter(Boolean).join(", ")}</p>
+      ${m.warning ? `<p class="note warn">${esc(m.warning)}</p>` : ""}
+      <details><summary>${m.terms.length} suggested terms (edit, one per line)</summary><textarea class="mterms" rows="6">${esc(m.terms.join("\n"))}</textarea></details>
+    </article>`).join("") || `<p class="note">No files yet.</p>`;
+}
+const saveCourse = () => post("/api/course", { name: $("#courseName").value, lecture: $("#lectureName").value, vocab: $("#vocab").value }).then(() => (lastMat = ""));
+$("#courseName").onchange = saveCourse; $("#lectureName").onchange = saveCourse; $("#vocab").onchange = saveCourse;
+$("#matList").onchange = (e) => {
+  const art = e.target.closest(".mat"); if (!art) return;
+  if (e.target.classList.contains("use")) post("/api/material-update", { id: art.dataset.id, use: e.target.checked });
+  if (e.target.classList.contains("mterms")) post("/api/material-update", { id: art.dataset.id, terms: e.target.value }).then(() => (lastMat = ""));
+};
+$("#matList").onclick = (e) => {
+  const b = e.target.closest(".del"); if (!b) return;
+  // two-step delete instead of a confirm dialog
+  if (b.dataset.sure) post("/api/material-delete", { id: b.closest(".mat").dataset.id });
+  else { b.dataset.sure = 1; b.textContent = "Click again to delete"; }
+};
+$("#files").onchange = async () => {
+  for (const f of $("#files").files) {
+    $("#uploadNote").textContent = `Reading ${f.name}…`;
+    try {
+      const r = await fetch("/api/material", { method: "POST", headers: { "x-prof-key": KEY, "x-filename": encodeURIComponent(f.name) }, body: f }).then((x) => x.json());
+      $("#uploadNote").textContent = r.error ? `${f.name}: ${r.error}` : `Added ${f.name}. Check its suggested terms below and remove any that are wrong.`;
+    } catch { $("#uploadNote").textContent = `Couldn't upload ${f.name}. Transcription still works without it.`; }
+  }
+  $("#files").value = ""; lastMat = "";
+};
+$("#addNotes").onclick = async () => {
+  const text = $("#notes").value.trim(); if (!text) return;
+  await post("/api/notes", { text }); $("#notes").value = ""; lastMat = "";
+};
+if (document.body.dataset.phase === "waiting") $("#materials").open = true;
 
 // Check in with the server every second (works through the Cloudflare tunnel, which holds back streams).
 async function poll() {

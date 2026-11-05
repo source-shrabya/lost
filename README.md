@@ -20,11 +20,32 @@ The terminal prints two links.
 
 If the student laptop can't load the page, macOS may be blocking incoming connections. Allow Node when the firewall asks, or check System Settings > Network > Firewall. Some campus Wi-Fi blocks laptop-to-laptop traffic. A phone hotspot works around that.
 
-## Transcript from a speech model on the laptop (recommended)
+## Transcript engines
 
-The transcript comes from a speech model that runs on the professor laptop. No audio leaves the laptop for the transcript, and there are no API charges. The default is Moonshine v2 ([moonshine-voice](https://github.com/moonshine-ai/moonshine)), which streams: words show up on the professor screen while they are still being spoken. [faster-whisper](https://github.com/SYSTRAN/faster-whisper) is also included. Without either, Lost uses Chrome's built-in speech recognition, which is less accurate.
+Lost can use one of four engines. The professor screen shows which one is running next to the Transcript heading.
 
-One-time setup on the professor laptop. You need Python 3.9 or newer and ffmpeg.
+| Engine | Where it runs | Cost | Notes |
+|---|---|---|---|
+| Deepgram Nova-3 | Deepgram's servers | Pay per minute; new accounts get free credit | Most accurate in our tests. Needs internet. The lecture audio goes to Deepgram. Underlines words it isn't sure about. |
+| Moonshine v2 (medium) | The professor laptop | Free | Words appear while the professor talks. Audio stays on the laptop. |
+| faster-whisper (small.en) | The professor laptop | Free | Waits for a pause before each line. |
+| Chrome speech recognition | Google, through Chrome | Free | Fallback. Can't use course terms. |
+
+Lost uses Deepgram when a key is set, otherwise Moonshine. Force one with `TRANSCRIBER=deepgram`, `moonshine`, `whisper` or `off`.
+
+### Deepgram
+
+Make an API key at deepgram.com. In the `lost` folder, create a file named `.env` (git ignores it, so the key never reaches GitHub) with one line:
+
+```
+DEEPGRAM_API_KEY=your-key-here
+```
+
+Then `npm start`. The terminal says `Transcript: Deepgram Nova-3`. The key stays on the server and is never sent to browsers.
+
+### Local engines (Moonshine, faster-whisper) and reading course files
+
+One-time setup on the professor laptop. You need Python 3.9 or newer and ffmpeg. This is also what lets Lost read PDF, PPTX and DOCX files, so do it even if you use Deepgram.
 
 Mac:
 
@@ -42,14 +63,26 @@ python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
 ```
 
-Then `npm start` as usual. The first start downloads the model, and the terminal says `moonshine-medium-streaming is ready` when it can transcribe. Wait for that before clicking Start class. If the terminal says it is using Chrome speech recognition, the line after "because" says what's missing.
+The first start downloads the model. Wait for `moonshine-medium-streaming is ready` before clicking Start class. If the terminal says it's using Chrome speech recognition, the line after "because" says what's missing. Options: `MOONSHINE_MODEL=small` or `tiny` is faster and less accurate; `WHISPER_MODEL=base.en` speeds up Whisper.
 
-Options, set before `npm start`:
+## Course materials
 
-- `LOST_TERMS="convergent, Cauchy, recursion, call stack"` lists course words so the model spells them right. This matters: in testing, Moonshine heard "convergent sequence" as "convergence sequence" until "convergent" was in the list.
-- `MOONSHINE_MODEL=small` or `tiny` is faster on slow laptops and less accurate. The default is `medium`.
-- `TRANSCRIBER=whisper` uses faster-whisper instead (`WHISPER_MODEL=small.en` by default). It waits for a pause before each line.
-- `TRANSCRIBER=off` goes back to Chrome's speech recognition.
+Open "Course materials" on the professor screen (it's open before class starts).
+
+1. Type the course and lecture name.
+2. Upload PDF, PPTX, DOCX or TXT files, or paste notes. Lost reads the text, including slide titles and speaker notes, and suggests terms such as names, acronyms and repeated technical words. Files up to 15 MB. Only the extracted text is kept, in `data/` on the laptop; the uploaded file itself is not stored.
+3. Check each file's suggested terms and delete the wrong ones. The suggestions come from simple rules, so expect some noise.
+4. Tick "Use for this lecture" on the files that apply. Add your own terms, one per line ("term: meaning" is fine; only the term is sent).
+
+The terms in use (up to 100) go to the engine as recognition hints: Deepgram's `keyterm`, Moonshine's key terms, Whisper's prompt and hotwords. Only the list of terms is sent, never the documents. The engines still write what was said: a term is never added just because it's on the list. Terms help spelling. They can't remove room noise or make every accent work, and a mic close to the professor helps more than any list.
+
+Scanned PDFs (pictures of pages) have no text. Lost says so and doesn't do OCR; paste the key terms instead.
+
+During class the professor can double-click a transcript line to fix it. The original words are kept and shown when hovering over the "edited" tag.
+
+## Testing the engines
+
+`node eval/compare.mjs` (Mac only) makes test audio with five macOS voices (US, UK, Indian, Australian, Irish), clean and with background talk, and compares each engine with and without course terms. It writes `eval/results.md`. The voices are synthetic, so real lecture audio will do worse; use it to compare settings.
 
 ## Claude explanations
 
@@ -63,7 +96,7 @@ It uses `claude-opus-5-5` with the server-side refusal fallback turned on, so if
 
 ## Running a class
 
-1. Professor clicks Start class. The mic turns on, the transcript fills in (from the local speech model if it's set up), and the professor's sound is shared for students who aren't in the room. If the mic fails, type into the box under the transcript.
+1. Professor clicks Start class. The mic turns on, the transcript fills in (from Deepgram or the local speech model, if set up), and the professor's sound is shared for students who aren't in the room. If the mic fails, type into the box under the transcript.
 2. Students tap I'm lost and keep listening. The button confirms with "Marked. You and 2 others."
 3. Students can tap Show transcript to read what has been said so far. It stays hidden until they open it.
 4. Students who aren't in the room tap Listen to class. The sound goes through the Lost server, about 2 seconds behind, so it works across any two networks.

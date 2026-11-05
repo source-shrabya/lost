@@ -5,7 +5,10 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
+// Secrets such as DEEPGRAM_API_KEY live in .env (never committed). Variables set in the terminal win.
+try { process.loadEnvFile(path.join(path.dirname(fileURLToPath(import.meta.url)), ".env")); } catch {}
+import { startEngine, engine, newStream, feed, endStream, setTerms } from "./engines.js";
+import { loadCourse, course, setDetails, addMaterial, addNotes, updateMaterial, deleteMaterial, vocabTerms } from "./course.js";
 import Anthropic from "@anthropic-ai/sdk";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -48,7 +51,9 @@ const SECURITY_HEADERS = {
   "content-security-policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
   "permissions-policy": "geolocation=(), payment=(), usb=()",
 };
-const PROF_ONLY = new Set(["/api/start", "/api/line", "/api/end", "/api/send", "/api/reset", "/api/demo-taps", "/api/demo-students"]);
+const PROF_ONLY = new Set(["/api/start", "/api/line", "/api/end", "/api/send", "/api/reset", "/api/demo-taps", "/api/demo-students",
+  "/api/course", "/api/notes", "/api/material-update", "/api/material-delete", "/api/line-edit"]);
+const MAX_UPLOAD = 15 * 1024 * 1024;
 const PUBLIC_FILES = new Set(["student.html", "prof.html", "style.css"]);
 
 // ---------- state ----------
@@ -93,9 +98,13 @@ function profView() {
     code: S.code, phase: S.phase, elapsed: now(), joined,
     lostCount: lost.size, share, alert: lost.size > 0 && share >= ALERT_SHARE,
     lines: linesFrom(S.lines.length - 40),
-    transcriber: whisper.ready ? "whisper" : "browser",
-    transcriberName: whisper.ready ? whisper.model : "Chrome speech recognition",
+    // "server" means a speech engine on the server writes the transcript; "browser" means Chrome does
+    transcriber: engine.ready ? "server" : "browser",
+    transcriberName: engine.ready ? engine.label : "Chrome speech recognition",
+    engineStatus: engine.ready ? engine.status : "",
+    engineProblem: engine.problem,
     interim: S.interim || "",
+    course: { ...course, termsInUse: vocabTerms().length },
     taps: S.taps.map((x) => x.t),
     report: S.report && {
       ...S.report,
@@ -113,7 +122,8 @@ function linesFrom(start, id) {
   start = Math.max(0, start);
   return S.lines.slice(start).map((l, k) => {
     const marks = S.lineMarks.get(start + k);
-    return id ? { ...l, i: start + k, mine: !!marks?.has(id) } : { ...l, i: start + k, marks: marks?.size || 0 };
+    // students get only the words; the professor also sees edits and unsure words
+    return id ? { t: l.t, text: l.text, i: start + k, mine: !!marks?.has(id) } : { ...l, i: start + k, marks: marks?.size || 0 };
   });
 }
 
@@ -145,68 +155,20 @@ function readRaw(req, limit) {
   });
 }
 
-// ---------- transcript from a speech model on this computer ----------
-// TRANSCRIBER=moonshine (default, Moonshine v2, streams while the professor talks),
-// TRANSCRIBER=whisper (faster-whisper, waits for pauses) or TRANSCRIBER=off (Chrome's own recognition).
-// One Python process loads the model once. Each time the professor starts sharing, a new ffmpeg
-// turns that WebM stream into plain 16 kHz audio and feeds it to Python.
-// (The variable is still called "whisper" below; it means whichever local model is running.)
-const ENGINE = (process.env.TRANSCRIBER || (process.env.WHISPER === "off" ? "off" : "moonshine")).toLowerCase();
-const whisper = { proc: null, ready: false, ffmpeg: null, why: "" };
-function startWhisper() {
-  // .venv/bin/python on Mac and Linux, .venv\Scripts\python.exe on Windows
-  const py = [path.join(here, ".venv", "bin", "python"), path.join(here, ".venv", "Scripts", "python.exe")].find((f) => fs.existsSync(f)) || "";
-  if (ENGINE === "off") { whisper.why = "turned off with TRANSCRIBER=off"; return; }
-  if (!py) { whisper.why = "no .venv folder found. Run the setup in the README (Transcript with faster-whisper)"; return; }
-  const ffCheck = spawn("ffmpeg", ["-version"]);
-  ffCheck.on("error", () => { whisper.why = "ffmpeg is not installed (Mac: brew install ffmpeg, Windows: winget install ffmpeg), then restart"; console.error(`  Transcript: Chrome speech recognition, because ${whisper.why}`); whisper.proc?.kill(); whisper.proc = null; });
-  const script = ENGINE === "whisper" ? "transcribe.py" : "transcribe_moonshine.py";
-  const proc = spawn(py, [path.join(here, script)], { stdio: ["pipe", "pipe", "pipe"], env: process.env });
-  whisper.proc = proc;
-  let out = "";
-  proc.stdout.on("data", (d) => {
-    out += d; let nl;
-    while ((nl = out.indexOf("\n")) >= 0) {
-      const line = out.slice(0, nl); out = out.slice(nl + 1);
-      let msg; try { msg = JSON.parse(line); } catch { continue; }
-      if (msg.ready) { whisper.ready = true; whisper.model = msg.model; console.log(`  Transcript: ${msg.model} is ready`); }
-      else if (msg.partial !== undefined) { if (S.phase === "live") S.interim = String(msg.partial).slice(0, 500); }
-      else if (msg.text && S.phase === "live") {
-        // the audio reaches the server about a second after it was spoken
-        const t = Math.max(0, (msg.start * 1000 - S.startedAt) / 1000 - 1);
-        S.lines.push({ t, text: String(msg.text).slice(0, 1000) });
-        S.lines.sort((a, b) => a.t - b.t);
-        S.interim = "";
-      }
-    }
-  });
-  proc.stderr.on("data", (d) => { if (!/HF_TOKEN|unauthenticated|%\||it\/s|B\/s/.test(d)) console.error("[transcriber]", String(d).trim()); });
-  proc.stdin.on("error", () => {});
-  proc.on("error", (e) => console.error("[whisper] could not start Python:", e.message));
-  proc.on("exit", (code) => {
-    if (whisper.why) return; // already explained (ffmpeg missing)
-    console.error(`[transcriber] stopped (code ${code}). Using Chrome speech recognition. If it says "No module named ...", run the pip install step in the README.`);
-    whisper.proc = null; whisper.ready = false;
-  });
-}
-function whisperNewStream(header) {
-  whisperEndStream();
-  if (!whisper.ready) return;
-  const ff = spawn("ffmpeg", ["-loglevel", "error", "-fflags", "nobuffer", "-i", "pipe:0", "-f", "s16le", "-ac", "1", "-ar", "16000", "pipe:1"]);
-  ff.on("error", (e) => { console.error("[whisper] ffmpeg failed:", e.message); whisper.ffmpeg = null; });
-  ff.stdin.on("error", () => {});
-  ff.stdout.on("data", (d) => whisper.proc?.stdin.write(d));
-  ff.stdin.write(header);
-  whisper.ffmpeg = ff;
-}
-function whisperFeed(piece) { whisper.ffmpeg?.stdin.write(piece); }
-function whisperEndStream() {
-  if (!whisper.ffmpeg) return;
-  whisper.ffmpeg.stdin.end(); whisper.ffmpeg = null;
-  // 1.5 s of silence so the model finishes the last line instead of waiting for more audio
-  setTimeout(() => whisper.proc?.stdin.write(Buffer.alloc(16000 * 2 * 1.5)), 500);
-}
-startWhisper();
+// ---------- transcript ----------
+// The speech engines live in engines.js, course materials in course.js.
+loadCourse(here);
+startEngine({
+  here, termsFile: path.join(here, "data", "terms.txt"),
+  onPartial: (text) => { if (S.phase === "live") S.interim = text.slice(0, 500); },
+  onLine: ({ text, wallStart, unsure }) => {
+    if (S.phase !== "live" || !text.trim()) return;
+    const t = Math.max(0, (wallStart - S.startedAt) / 1000);
+    S.lines.push({ t, text: text.trim().slice(0, 1000), ...(unsure?.length ? { unsure: unsure.slice(0, 20) } : {}) });
+    S.interim = "";
+  },
+});
+setTerms(vocabTerms());
 
 // Pages check in every second (GET /api/poll). Streams were dropped because the Cloudflare
 // tunnel holds back streaming responses.
@@ -346,6 +308,23 @@ const routes = {
     return {};
   },
   "POST /api/reset": async () => { reset(); return {}; },
+
+  // ---- course materials and vocabulary (professor only) ----
+  "POST /api/course": async (b) => { setDetails(b); setTerms(vocabTerms()); return {}; },
+  "POST /api/notes": async (b) => { const r = await addNotes(b.text); setTerms(vocabTerms()); return r; },
+  "POST /api/material-update": async (b) => {
+    updateMaterial(String(b.id), { use: typeof b.use === "boolean" ? b.use : undefined, terms: typeof b.terms === "string" ? b.terms : undefined });
+    setTerms(vocabTerms()); return {};
+  },
+  "POST /api/material-delete": async (b) => { deleteMaterial(String(b.id)); setTerms(vocabTerms()); return {}; },
+  // Professor fixes a transcript line. The original words are kept next to the fix.
+  "POST /api/line-edit": async (b) => {
+    const l = S.lines[b.i]; const text = String(b.text || "").trim().slice(0, 1000);
+    if (!l || !Number.isInteger(b.i) || !text) return {};
+    if (l.original === undefined) l.original = l.text;
+    l.text = text; l.edited = new Date().toISOString(); delete l.unsure;
+    return {};
+  },
 };
 
 const server = http.createServer(async (req, res) => {
@@ -359,11 +338,11 @@ const server = http.createServer(async (req, res) => {
       if (!prof) { json(res, { error: "Professor only" }, 403); return; }
       const buf = await readRaw(req, 512 * 1024);
       if (!buf) { if (!res.headersSent) json(res, { error: "Too large" }, 413); return; }
-      if (url.searchParams.get("first") === "1") { relay.id++; relay.header = buf; relay.pieces.clear(); relay.seq = 0; whisperNewStream(buf); }
-      else if (relay.header) { relay.seq++; relay.pieces.set(relay.seq, buf); relay.pieces.delete(relay.seq - 30); whisperFeed(buf); }
+      if (url.searchParams.get("first") === "1") { relay.id++; relay.header = buf; relay.pieces.clear(); relay.seq = 0; newStream(buf); }
+      else if (relay.header) { relay.seq++; relay.pieces.set(relay.seq, buf); relay.pieces.delete(relay.seq - 30); feed(buf); }
       json(res, { seq: relay.seq }); return;
     }
-    if (req.method === "DELETE") { if (prof) { relay.header = null; relay.pieces.clear(); relay.seq = -1; whisperEndStream(); } json(res, {}); return; }
+    if (req.method === "DELETE") { if (prof) { relay.header = null; relay.pieces.clear(); relay.seq = -1; endStream(); } json(res, {}); return; }
     // students fetch a piece; only joined students
     const sid = url.searchParams.get("id");
     if (!S.students.has(sid) || !relay.header) { res.writeHead(404, SECURITY_HEADERS); res.end(); return; }
@@ -371,6 +350,16 @@ const server = http.createServer(async (req, res) => {
     const piece = n === 0 ? relay.header : relay.pieces.get(n);
     if (!piece) { res.writeHead(404, SECURITY_HEADERS); res.end(); return; }
     res.writeHead(200, { "content-type": "audio/webm", "cache-control": "no-store", ...SECURITY_HEADERS }); res.end(piece); return;
+  }
+
+  // Professor uploads a course file: raw bytes, file name in the x-filename header.
+  if (url.pathname === "/api/material" && req.method === "POST") {
+    if (!prof) { json(res, { error: "Professor only" }, 403); return; }
+    const buf = await readRaw(req, MAX_UPLOAD);
+    if (!buf) { if (!res.headersSent) json(res, { error: "Files can be up to 15 MB." }, 413); return; }
+    let name = ""; try { name = decodeURIComponent(String(req.headers["x-filename"] || "")); } catch {}
+    const r = await addMaterial(name, buf); setTerms(vocabTerms());
+    json(res, r); return;
   }
 
   if (url.pathname === "/api/poll" && req.method === "GET") {
@@ -412,5 +401,6 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`    http://localhost:${PORT}/prof?key=${PROF_KEY}`);
   for (const ip of ips) console.log(`  Students (same Wi-Fi):               http://${ip}:${PORT}`);
   console.log(`\n  Claude explanations: ${ai ? "ON" : "OFF (set ANTHROPIC_API_KEY to turn on)"}`);
-  console.log(`  Transcript: ${whisper.proc && !whisper.why ? `${ENGINE}, loading the model (the first start downloads it)…` : `Chrome speech recognition, because ${whisper.why}`}\n`);
+  console.log(`  Transcript: ${engine.name === "deepgram" ? "Deepgram Nova-3 (audio goes to Deepgram)" : engine.name !== "off" ? `${engine.name}, loading the model (the first start downloads it)…` : `Chrome speech recognition, because ${engine.why}`}`);
+  console.log(`  Course terms in use: ${vocabTerms().length}\n`);
 });

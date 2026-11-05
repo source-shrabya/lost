@@ -23,8 +23,16 @@ MAX_LEN = 8.0               # never wait longer than this before transcribing
 MIN_SPEECH = 0.4            # ignore blips shorter than this
 
 model_name = os.environ.get("WHISPER_MODEL", "small.en")
-terms = os.environ.get("LOST_TERMS", "").strip()
-prompt = f"Lecture vocabulary: {terms}." if terms else None
+# Course terms: LOST_TERMS plus the professor's vocabulary file (LOST_TERMS_FILE), re-read for each
+# phrase. Whisper gets them as a short prompt and as hotwords, never whole documents.
+def read_terms():
+    found = [t.strip() for t in os.environ.get("LOST_TERMS", "").split(",") if t.strip()]
+    try:
+        with open(os.environ.get("LOST_TERMS_FILE", ""), encoding="utf-8") as f:
+            found += [t.strip() for t in f if t.strip() and "," not in t]
+    except OSError:
+        pass
+    return ", ".join(list(dict.fromkeys(found))[:40])
 
 def say(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
@@ -47,6 +55,8 @@ def reader():
 threading.Thread(target=reader, daemon=True).start()
 
 def transcribe(audio, started):
+    terms = read_terms()
+    prompt = f"Lecture vocabulary: {terms}." if terms else None
     segments, _ = model.transcribe(
         audio, language="en", beam_size=1, vad_filter=True,
         condition_on_previous_text=False, initial_prompt=prompt,
