@@ -8,7 +8,7 @@
 </head>
 <body>
 <main class="student">
-  <section id="join" hidden>
+  <section id="join">
     <h1>Lost</h1>
     <p class="muted">Type the code on your professor's screen.</p>
     <form id="joinForm" class="row">
@@ -110,6 +110,10 @@ async function onOffer(data) {
     const v = $("#video");
     if (v.srcObject !== e.streams[0]) v.srcObject = e.streams[0];
     $("#videoBox").hidden = false;
+    // sound-only call: keep a slim bar instead of a big black box
+    const hasVideo = e.streams[0].getVideoTracks().length > 0;
+    v.style.height = hasVideo ? "" : "48px";
+    $("#liveNote").dataset.sound = hasVideo ? "" : "You're hearing your professor live.";
     v.muted = false;
     // Browsers block sound until the page has been clicked; offer a button if that happens.
     v.play().catch(() => { v.muted = true; v.play(); $("#unmute").hidden = false; });
@@ -124,19 +128,30 @@ async function onOffer(data) {
 }
 $("#unmute").onclick = () => { const v = $("#video"); v.muted = false; v.play(); $("#unmute").hidden = true; };
 
-// EventSource reconnects by itself if the Wi-Fi drops
-const es = new EventSource(`/events?role=student&id=${id}`);
-es.onmessage = (e) => render(JSON.parse(e.data));
-es.addEventListener("signal", (e) => {
-  const { data } = JSON.parse(e.data);
-  if (data.sdp) onOffer(data);
+async function onSignal({ data }) {
+  if (data.sdp) await onOffer(data);
   else if (data.candidate && pc && pc.call === data.call) {
     if (pc.remoteDescription) pc.addIceCandidate(data.candidate).catch(() => {});
     else pc.pending.push(data.candidate);
   }
-});
-es.onerror = () => ($("#ack").textContent = "Reconnecting…");
-es.onopen = () => { $("#ack").textContent = ""; signal({ hello: true }); };
+}
+
+// Check in with the server every second. Simple polling works through any proxy or tunnel.
+let saidHello = false, offline = false;
+async function poll() {
+  try {
+    const r = await fetch(`/api/poll?role=student&id=${id}`, { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    const { state, signals } = await r.json();
+    if (offline) { offline = false; $("#ack").textContent = ""; }
+    render(state);
+    // after a reload, ask the professor's page to restart the video call
+    if (state.joined && !saidHello) { saidHello = true; signal({ hello: true }); }
+    for (const s of signals) await onSignal(s);
+  } catch { offline = true; $("#ack").textContent = "Reconnecting…"; }
+  setTimeout(poll, 1000);
+}
+poll();
 </script>
 </body>
 </html>

@@ -52,9 +52,12 @@ const PUBLIC_FILES = new Set(["student.html", "prof.html", "style.css"]);
 
 // ---------- state ----------
 let S;
+// CLASS_CODE lets a restart keep the code students already have (used once, for the first class).
+let codeFromEnv = /^[A-Z0-9]{4}$/.test(process.env.CLASS_CODE || "") ? process.env.CLASS_CODE : null;
+const firstCode = () => { const c = codeFromEnv; codeFromEnv = null; return c; };
 function reset() {
   S = {
-    code: Math.random().toString(36).slice(2, 6).toUpperCase(),
+    code: firstCode() || Math.random().toString(36).slice(2, 6).toUpperCase(),
     phase: "waiting",          // waiting | live | ended
     startedAt: null,
     lines: [],                 // { t, text }
@@ -77,7 +80,7 @@ function lostNow() {
 }
 
 // ---------- server-sent events ----------
-const clients = { prof: new Set(), student: new Map() }; // student: res -> id
+const clients = { student: new Map() }; // student id -> last check-in time
 
 function profView() {
   const lost = lostNow();
@@ -112,19 +115,22 @@ function studentView(id) {
   };
 }
 
-function send(res, data) { res.write(`data: ${JSON.stringify(data)}\n\n`); }
-function sendSignal(res, data) { res.write(`event: signal\ndata: ${JSON.stringify(data)}\n\n`); }
+// Pages check in every second (GET /api/poll). Streams were dropped because the Cloudflare
+// tunnel holds back streaming responses. Video setup messages wait in a mailbox until the next check-in.
+const mailbox = new Map(); // recipient id ("prof" or student id) -> [messages]
+function sendSignal(to, data) {
+  if (!mailbox.has(to)) mailbox.set(to, []);
+  const box = mailbox.get(to); box.push(data);
+  if (box.length > 200) box.splice(0, box.length - 200);
+}
 
-// Students with an open connection: the professor's page opens one video call per viewer.
+// Students whose page checked in recently: the professor's page opens one video call per viewer.
 function viewers() {
-  return [...new Set([...clients.student.values()].filter((id) => S.students.has(id)))];
+  const t = Date.now();
+  return [...clients.student].filter(([id, seen]) => t - seen < 5000 && S.students.has(id)).map(([id]) => id);
 }
-function broadcast() {
-  const p = profView();
-  for (const res of clients.prof) send(res, p);
-  for (const [res, id] of clients.student) send(res, studentView(id));
-}
-setInterval(broadcast, 1000); // keeps "lost now" decaying and elapsed time ticking
+function broadcast() {} // nothing to push; pages pick up changes on their next check-in
+setInterval(() => { const t = Date.now(); for (const [id, seen] of clients.student) if (t - seen > 60000) { clients.student.delete(id); mailbox.delete(id); } }, 30000);
 
 // ---------- report ----------
 function fmt(t) { const s = Math.max(0, Math.round(t)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
@@ -185,7 +191,7 @@ function body(req) {
   });
 }
 function json(res, data, code = 200) {
-  res.writeHead(code, { "content-type": "application/json", ...SECURITY_HEADERS }); res.end(JSON.stringify(data));
+  res.writeHead(code, { "content-type": "application/json", "cache-control": "no-store", ...SECURITY_HEADERS }); res.end(JSON.stringify(data));
 }
 const validId = (id) => typeof id === "string" && /^[a-z0-9-]{8,64}$/i.test(id);
 const types = { ".html": "text/html; charset=utf-8", ".css": "text/css", ".js": "text/javascript" };
@@ -255,8 +261,8 @@ const routes = {
   // Students may only talk to the professor; only the professor (with the key) may talk to students.
   "POST /api/signal": async (b, prof) => {
     if (!b.data || typeof b.data !== "object") return {};
-    if (prof) { for (const [res, id] of clients.student) if (id === b.to) sendSignal(res, { from: "prof", data: b.data }); }
-    else if (b.to === "prof" && S.students.has(b.from)) for (const res of clients.prof) sendSignal(res, { from: b.from, data: b.data });
+    if (prof) { if (clients.student.has(b.to)) sendSignal(b.to, { from: "prof", data: b.data }); }
+    else if (b.to === "prof" && S.students.has(b.from)) sendSignal("prof", { from: b.from, data: b.data });
     return {};
   },
 };
@@ -267,15 +273,17 @@ const server = http.createServer(async (req, res) => {
   const prof = isProf(req, url);
   if (!prof && !allowed(clientIp(req))) { res.writeHead(429, SECURITY_HEADERS); res.end("Slow down"); return; }
 
-  if (url.pathname === "/events") {
+  if (url.pathname === "/api/poll" && req.method === "GET") {
     const role = url.searchParams.get("role");
-    if (role === "prof" && !prof) { res.writeHead(403, SECURITY_HEADERS); res.end(); return; }
-    if (role !== "prof" && !validId(url.searchParams.get("id"))) { res.writeHead(400, SECURITY_HEADERS); res.end(); return; }
-    if (clients.prof.size + clients.student.size >= MAX_STREAMS) { res.writeHead(503, SECURITY_HEADERS); res.end(); return; }
-    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive", ...SECURITY_HEADERS });
-    if (role === "prof") { clients.prof.add(res); send(res, profView()); req.on("close", () => clients.prof.delete(res)); }
-    else { const id = url.searchParams.get("id") || ""; clients.student.set(res, id); send(res, studentView(id)); req.on("close", () => clients.student.delete(res)); }
-    return;
+    if (role === "prof") {
+      if (!prof) { json(res, { error: "Professor only" }, 403); return; }
+      json(res, { state: profView(), signals: mailbox.get("prof")?.splice(0) || [] }); return;
+    }
+    const id = url.searchParams.get("id");
+    if (!validId(id)) { json(res, { error: "Bad id" }, 400); return; }
+    if (!clients.student.has(id) && clients.student.size >= MAX_STREAMS) { json(res, { error: "Busy" }, 503); return; }
+    clients.student.set(id, Date.now());
+    json(res, { state: studentView(id), signals: mailbox.get(id)?.splice(0) || [] }); return;
   }
   const handler = routes[`${req.method} ${url.pathname}`];
   if (handler) {
