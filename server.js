@@ -67,6 +67,7 @@ function reset() {
     lineMarks: new Map(),      // line index -> Set(student id) who pointed at that exact line
     lastTap: new Map(),        // id -> t
     report: null,              // { moments, ai, sent }
+    interim: "",               // words of the line the professor is still saying
     stillConfused: new Map(),  // momentIndex -> Set(id)
     unhelpful: new Map(),
   };
@@ -93,6 +94,8 @@ function profView() {
     lostCount: lost.size, share, alert: lost.size > 0 && share >= ALERT_SHARE,
     lines: linesFrom(S.lines.length - 40),
     transcriber: whisper.ready ? "whisper" : "browser",
+    transcriberName: whisper.ready ? whisper.model : "Chrome speech recognition",
+    interim: S.interim || "",
     taps: S.taps.map((x) => x.t),
     report: S.report && {
       ...S.report,
@@ -142,19 +145,23 @@ function readRaw(req, limit) {
   });
 }
 
-// ---------- transcript from faster-whisper (runs on this computer) ----------
+// ---------- transcript from a speech model on this computer ----------
+// TRANSCRIBER=moonshine (default, Moonshine v2, streams while the professor talks),
+// TRANSCRIBER=whisper (faster-whisper, waits for pauses) or TRANSCRIBER=off (Chrome's own recognition).
 // One Python process loads the model once. Each time the professor starts sharing, a new ffmpeg
-// turns that WebM stream into plain 16 kHz audio and feeds it to Python. Set WHISPER=off to use
-// Chrome's built-in speech recognition instead.
+// turns that WebM stream into plain 16 kHz audio and feeds it to Python.
+// (The variable is still called "whisper" below; it means whichever local model is running.)
+const ENGINE = (process.env.TRANSCRIBER || (process.env.WHISPER === "off" ? "off" : "moonshine")).toLowerCase();
 const whisper = { proc: null, ready: false, ffmpeg: null, why: "" };
 function startWhisper() {
   // .venv/bin/python on Mac and Linux, .venv\Scripts\python.exe on Windows
   const py = [path.join(here, ".venv", "bin", "python"), path.join(here, ".venv", "Scripts", "python.exe")].find((f) => fs.existsSync(f)) || "";
-  if (process.env.WHISPER === "off") { whisper.why = "turned off with WHISPER=off"; return; }
+  if (ENGINE === "off") { whisper.why = "turned off with TRANSCRIBER=off"; return; }
   if (!py) { whisper.why = "no .venv folder found. Run the setup in the README (Transcript with faster-whisper)"; return; }
   const ffCheck = spawn("ffmpeg", ["-version"]);
   ffCheck.on("error", () => { whisper.why = "ffmpeg is not installed (Mac: brew install ffmpeg, Windows: winget install ffmpeg), then restart"; console.error(`  Transcript: Chrome speech recognition, because ${whisper.why}`); whisper.proc?.kill(); whisper.proc = null; });
-  const proc = spawn(py, [path.join(here, "transcribe.py")], { stdio: ["pipe", "pipe", "pipe"], env: process.env });
+  const script = ENGINE === "whisper" ? "transcribe.py" : "transcribe_moonshine.py";
+  const proc = spawn(py, [path.join(here, script)], { stdio: ["pipe", "pipe", "pipe"], env: process.env });
   whisper.proc = proc;
   let out = "";
   proc.stdout.on("data", (d) => {
@@ -162,21 +169,23 @@ function startWhisper() {
     while ((nl = out.indexOf("\n")) >= 0) {
       const line = out.slice(0, nl); out = out.slice(nl + 1);
       let msg; try { msg = JSON.parse(line); } catch { continue; }
-      if (msg.ready) { whisper.ready = true; console.log(`  Transcript: faster-whisper (${msg.model}) is ready`); }
+      if (msg.ready) { whisper.ready = true; whisper.model = msg.model; console.log(`  Transcript: ${msg.model} is ready`); }
+      else if (msg.partial !== undefined) { if (S.phase === "live") S.interim = String(msg.partial).slice(0, 500); }
       else if (msg.text && S.phase === "live") {
         // the audio reaches the server about a second after it was spoken
         const t = Math.max(0, (msg.start * 1000 - S.startedAt) / 1000 - 1);
         S.lines.push({ t, text: String(msg.text).slice(0, 1000) });
         S.lines.sort((a, b) => a.t - b.t);
+        S.interim = "";
       }
     }
   });
-  proc.stderr.on("data", (d) => { if (!/HF_TOKEN|unauthenticated/.test(d)) console.error("[whisper]", String(d).trim()); });
+  proc.stderr.on("data", (d) => { if (!/HF_TOKEN|unauthenticated|%\||it\/s|B\/s/.test(d)) console.error("[transcriber]", String(d).trim()); });
   proc.stdin.on("error", () => {});
   proc.on("error", (e) => console.error("[whisper] could not start Python:", e.message));
   proc.on("exit", (code) => {
     if (whisper.why) return; // already explained (ffmpeg missing)
-    console.error(`[whisper] stopped (code ${code}). Using Chrome speech recognition. If it says "No module named faster_whisper", run the pip install step in the README.`);
+    console.error(`[transcriber] stopped (code ${code}). Using Chrome speech recognition. If it says "No module named ...", run the pip install step in the README.`);
     whisper.proc = null; whisper.ready = false;
   });
 }
@@ -191,7 +200,12 @@ function whisperNewStream(header) {
   whisper.ffmpeg = ff;
 }
 function whisperFeed(piece) { whisper.ffmpeg?.stdin.write(piece); }
-function whisperEndStream() { whisper.ffmpeg?.stdin.end(); whisper.ffmpeg = null; }
+function whisperEndStream() {
+  if (!whisper.ffmpeg) return;
+  whisper.ffmpeg.stdin.end(); whisper.ffmpeg = null;
+  // 1.5 s of silence so the model finishes the last line instead of waiting for more audio
+  setTimeout(() => whisper.proc?.stdin.write(Buffer.alloc(16000 * 2 * 1.5)), 500);
+}
 startWhisper();
 
 // Pages check in every second (GET /api/poll). Streams were dropped because the Cloudflare
@@ -398,5 +412,5 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`    http://localhost:${PORT}/prof?key=${PROF_KEY}`);
   for (const ip of ips) console.log(`  Students (same Wi-Fi):               http://${ip}:${PORT}`);
   console.log(`\n  Claude explanations: ${ai ? "ON" : "OFF (set ANTHROPIC_API_KEY to turn on)"}`);
-  console.log(`  Transcript: ${whisper.proc && !whisper.why ? "faster-whisper, loading the model (the first time downloads about 480 MB)…" : `Chrome speech recognition, because ${whisper.why}`}\n`);
+  console.log(`  Transcript: ${whisper.proc && !whisper.why ? `${ENGINE}, loading the model (the first start downloads it)…` : `Chrome speech recognition, because ${whisper.why}`}\n`);
 });

@@ -20,9 +20,9 @@ The terminal prints two links.
 
 If the student laptop can't load the page, macOS may be blocking incoming connections. Allow Node when the firewall asks, or check System Settings > Network > Firewall. Some campus Wi-Fi blocks laptop-to-laptop traffic. A phone hotspot works around that.
 
-## Transcript with faster-whisper (recommended)
+## Transcript from a speech model on the laptop (recommended)
 
-The transcript comes from [faster-whisper](https://github.com/SYSTRAN/faster-whisper), which runs on the professor laptop. No audio leaves the laptop for the transcript, and there are no API charges. Without it, Lost uses Chrome's built-in speech recognition, which is less accurate.
+The transcript comes from a speech model that runs on the professor laptop. No audio leaves the laptop for the transcript, and there are no API charges. The default is Moonshine v2 ([moonshine-voice](https://github.com/moonshine-ai/moonshine)), which streams: words show up on the professor screen while they are still being spoken. [faster-whisper](https://github.com/SYSTRAN/faster-whisper) is also included. Without either, Lost uses Chrome's built-in speech recognition, which is less accurate.
 
 One-time setup on the professor laptop. You need Python 3.9 or newer and ffmpeg.
 
@@ -42,13 +42,14 @@ python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
 ```
 
-Then `npm start` as usual. The first start downloads the model (about 480 MB), and the terminal says `faster-whisper (small.en) is ready` when it can transcribe. The professor's mic goes to Whisper once Start class is clicked. Lines show up 1 to 3 seconds after each pause.
+Then `npm start` as usual. The first start downloads the model, and the terminal says `moonshine-medium-streaming is ready` when it can transcribe. Wait for that before clicking Start class. If the terminal says it is using Chrome speech recognition, the line after "because" says what's missing.
 
 Options, set before `npm start`:
 
-- `LOST_TERMS="recursion, call stack, base case"` lists course words so Whisper spells them right.
-- `WHISPER_MODEL=base.en` is faster on slow laptops. `medium.en` is more accurate but may fall behind live speech on a laptop CPU. The default is `small.en`.
-- `WHISPER=off` goes back to Chrome's speech recognition.
+- `LOST_TERMS="convergent, Cauchy, recursion, call stack"` lists course words so the model spells them right. This matters: in testing, Moonshine heard "convergent sequence" as "convergence sequence" until "convergent" was in the list.
+- `MOONSHINE_MODEL=small` or `tiny` is faster on slow laptops and less accurate. The default is `medium`.
+- `TRANSCRIBER=whisper` uses faster-whisper instead (`WHISPER_MODEL=small.en` by default). It waits for a pause before each line.
+- `TRANSCRIBER=off` goes back to Chrome's speech recognition.
 
 ## Claude explanations
 
@@ -62,7 +63,7 @@ It uses `claude-opus-5-5` with the server-side refusal fallback turned on, so if
 
 ## Running a class
 
-1. Professor clicks Start class. The mic turns on, the transcript fills in (from faster-whisper if it's set up), and the professor's sound is shared for students who aren't in the room. If the mic fails, type into the box under the transcript.
+1. Professor clicks Start class. The mic turns on, the transcript fills in (from the local speech model if it's set up), and the professor's sound is shared for students who aren't in the room. If the mic fails, type into the box under the transcript.
 2. Students tap I'm lost and keep listening. The button confirms with "Marked. You and 2 others."
 3. Students can tap Show transcript to read what has been said so far. It stays hidden until they open it.
 4. Students who aren't in the room tap Listen to class. The sound goes through the Lost server, about 2 seconds behind, so it works across any two networks.

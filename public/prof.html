@@ -104,7 +104,8 @@ function render(s) {
   // Whisper finished loading during class: hand the transcript over to it. Whisper stopped: Chrome takes over.
   if (listening && s.transcriber === "whisper" && rec) { const r = rec; rec = null; r.onend = null; r.stop(); $("#interim").textContent = ""; }
   if (listening && s.transcriber !== "whisper" && !rec && Rec) startRec();
-  $("#transcriber").textContent = s.transcriber === "whisper" ? "Transcript by faster-whisper on this laptop" : "Transcript by Chrome speech recognition";
+  $("#transcriber").textContent = s.transcriber === "whisper" ? `by ${s.transcriberName} on this laptop` : "by Chrome speech recognition";
+  if (s.transcriber === "whisper") $("#interim").textContent = s.interim;
 
   const pct = Math.round(s.share * 100);
   $("#counter").textContent = s.lostCount ? `${s.lostCount} of ${s.joined} lost right now (${pct}%)` : "Nobody lost right now";
