@@ -107,12 +107,13 @@ function render(s) {
   $("#counter").className = "counter" + (s.alert ? " alert" : "");
   $("#counter").hidden = s.phase !== "live";
 
-  const linesKey = s.lines.length + ":" + (s.lines.at(-1)?.text || "");
+  const linesKey = s.lines.length + ":" + (s.lines.at(-1)?.text || "") + ":" + s.lines.map((l) => l.marks).join(",");
   if (linesKey !== lastLines) {
     lastLines = linesKey;
     const box = $("#transcript");
-    box.innerHTML = s.lines.map((l) => `<p><time>${fmt(l.t)}</time>${esc(l.text)}</p>`).join("");
-    box.scrollTop = box.scrollHeight;
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    box.innerHTML = s.lines.map((l) => `<p${l.marks ? ' class="marked"' : ""}><time>${fmt(l.t)}</time>${esc(l.text)}${l.marks ? ` <span class="lostmark">${l.marks} lost here</span>` : ""}</p>`).join("");
+    if (atBottom) box.scrollTop = box.scrollHeight;
   }
   drawTimeline(s);
   renderReport(s.report);
@@ -148,7 +149,8 @@ function renderReport(r) {
         <span class="who">${m.count} student${m.count === 1 ? "" : "s"}, ${Math.round(m.share * 100)}% of the class</span>
       </div>
       <div class="share"><div style="width:${Math.max(2, Math.round(m.share * 100))}%"></div></div>
-      <blockquote class="said">${esc(m.said)}</blockquote>
+      ${m.pointed?.length ? `<div class="pointed"><span>Students pointed at</span>${m.pointed.map((l) => `<p>"${esc(l.text)}" <b>${l.count} student${l.count === 1 ? "" : "s"}</b></p>`).join("")}</div>` : ""}
+      <details${m.pointed?.length ? "" : " open"}><summary>Everything you said in the 90 seconds before</summary><blockquote class="said">${esc(m.said)}</blockquote></details>
       ${m.reteach ? `<p class="reteach"><span>Try next class</span>${esc(m.reteach)}</p>` : ""}
       ${m.explanation ? `<details><summary>What students will get</summary><p>${esc(m.explanation)}</p><p><em>${esc(m.question)}</em> ${esc(m.answer)}</p></details>` : ""}
       ${r.sent ? `<p class="note">${m.stillConfused} still confused. ${m.unhelpful} said the catch-up didn't help.</p>` : ""}

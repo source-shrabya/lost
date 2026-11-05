@@ -62,7 +62,8 @@ function reset() {
     startedAt: null,
     lines: [],                 // { t, text }
     students: new Map(),       // id -> { fake }
-    taps: [],                  // { id, t }
+    taps: [],                  // { id, t: moment in class, at: when tapped, line }
+    lineMarks: new Map(),      // line index -> Set(student id) who pointed at that exact line
     lastTap: new Map(),        // id -> t
     report: null,              // { moments, ai, sent }
     stillConfused: new Map(),  // momentIndex -> Set(id)
@@ -76,7 +77,7 @@ const realStudents = () => S.students.size;
 
 function lostNow() {
   const t = now();
-  return new Set(S.taps.filter((x) => t - x.t <= LOOKBACK).map((x) => x.id));
+  return new Set(S.taps.filter((x) => t - (x.at ?? x.t) <= LOOKBACK).map((x) => x.id));
 }
 
 // ---------- check-ins ----------
@@ -89,7 +90,7 @@ function profView() {
   return {
     code: S.code, phase: S.phase, elapsed: now(), joined,
     lostCount: lost.size, share, alert: lost.size > 0 && share >= ALERT_SHARE,
-    lines: S.lines.slice(-40),
+    lines: linesFrom(S.lines.length - 40),
     taps: S.taps.map((x) => x.t),
     report: S.report && {
       ...S.report,
@@ -102,6 +103,15 @@ function profView() {
   };
 }
 
+// Transcript lines with their index (so a student can point at one) and how many students marked each.
+function linesFrom(start, id) {
+  start = Math.max(0, start);
+  return S.lines.slice(start).map((l, k) => {
+    const marks = S.lineMarks.get(start + k);
+    return id ? { ...l, i: start + k, mine: !!marks?.has(id) } : { ...l, i: start + k, marks: marks?.size || 0 };
+  });
+}
+
 function studentView(id, wantLines) {
   const mine = S.report?.sent
     ? S.report.moments.map((m, i) => ({ ...m, index: i })).filter((m) => m.ids.includes(id))
@@ -112,7 +122,7 @@ function studentView(id, wantLines) {
     catchup: mine && mine.map(({ ids, ...m }) => m),
     sent: !!S.report?.sent,
     // live transcript, only while the student has it open
-    lines: wantLines && S.phase === "live" ? S.lines.slice(-60) : null,
+    lines: wantLines && S.phase === "live" ? linesFrom(S.lines.length - 60, id) : null,
     audio: relay.header ? { id: relay.id, seq: relay.seq } : null,
   };
 }
@@ -150,8 +160,11 @@ function buildMoments() {
     const ids = [...new Set(g.taps.map((x) => x.id))];
     const from = Math.max(0, g.start - LOOKBACK);
     const said = S.lines.filter((l) => l.t >= from && l.t <= g.end + 5).map((l) => l.text).join(" ");
+    // exact sentences students pointed at inside this moment
+    const pointed = S.lines.map((l, i) => ({ text: l.text, t: l.t, count: S.lineMarks.get(i)?.size || 0 }))
+      .filter((l) => l.count && l.t >= from && l.t <= g.end + 5).map(({ text, count }) => ({ text, count }));
     return {
-      at: fmt(g.start), from: fmt(from), ids,
+      at: fmt(g.start), from: fmt(from), ids, pointed,
       count: ids.length, share: Math.min(1, ids.length / joined),
       said: said || "(nothing was transcribed in this window)",
     };
@@ -215,10 +228,17 @@ const routes = {
     if (S.phase !== "live") return { counted: false, reason: "Class isn't live." };
     if (!S.students.has(b.id)) return { counted: false, reason: "Join the class first." };
     const t = now(); const last = S.lastTap.get(b.id);
+    // A student may point at one transcript line; then the moment is when that line was said.
+    const line = Number.isInteger(b.line) && S.lines[b.line] ? b.line : null;
+    const at = line === null ? t : S.lines[line].t;
+    if (line !== null) { if (!S.lineMarks.has(line)) S.lineMarks.set(line, new Set()); S.lineMarks.get(line).add(b.id); }
     const counted = last === undefined || t - last >= TAP_COOLDOWN;
-    if (counted) { S.taps.push({ id: b.id, t }); S.lastTap.set(b.id, t); }
+    if (counted) { S.taps.push({ id: b.id, t: at, at: t, line }); S.lastTap.set(b.id, t); }
     const lost = lostNow(); lost.delete(b.id);
-    return { counted, others: lost.size };
+    // what was said in the 15 seconds up to that moment, shown to the student right away
+    let recent = S.lines.filter((l) => l.t >= at - 15 && l.t <= at + 0.5);
+    if (!recent.length) recent = S.lines.filter((l) => l.t <= at + 0.5).slice(-2);
+    return { counted: counted || line !== null, others: lost.size, recent };
   },
   "POST /api/demo-taps": async (b) => { // demo mode: fake students, clearly labelled on screen
     const n = Math.min(30, Number(b.n) || 5);

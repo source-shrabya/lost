@@ -27,18 +27,28 @@
       <span class="note">Class <b id="classCode"></b></span>
     </header>
 
-    <button class="lostbtn" id="lost"><span class="lost-main">I'm lost</span><span class="lost-sub">Tap, then keep listening</span></button>
-    <p id="ack" class="ack" aria-live="polite"></p>
+    <div class="main-col">
+      <button class="lostbtn" id="lost"><span class="lost-main">I'm lost</span><span class="lost-sub">Tap, then keep listening</span></button>
+      <p id="ack" class="ack" aria-live="polite"></p>
 
-    <div class="tools">
-      <button id="listen" class="tool" disabled>Listen to class</button>
-      <button id="showT" class="tool" aria-expanded="false" aria-controls="tpanel" disabled>Show transcript</button>
+      <div class="tools">
+        <button id="listen" class="tool" disabled>Listen to class</button>
+        <button id="showT" class="tool" aria-expanded="false" aria-controls="tpanel" disabled>Show transcript</button>
+      </div>
+      <p id="listenNote" class="note center" aria-live="polite"></p>
+      <audio id="relayAudio"></audio>
     </div>
-    <p id="listenNote" class="note center" aria-live="polite"></p>
-    <audio id="relayAudio"></audio>
 
-    <div id="tpanel" class="tpanel" hidden>
-      <div id="tlines" class="tlines"></div>
+    <div class="side-col">
+      <div id="recent" class="side-card" hidden>
+        <div class="side-head"><h2 id="recentTitle">The last 15 seconds</h2><button id="closeRecent" class="quiet">Close</button></div>
+        <div id="recentLines" class="tlines"></div>
+      </div>
+      <div id="tpanel" class="side-card" hidden>
+        <div class="side-head"><h2>Transcript</h2></div>
+        <p class="note tip">Tap the line where you got lost, then tap I'm lost.</p>
+        <div id="tlines" class="tlines"></div>
+      </div>
     </div>
   </section>
 
@@ -74,20 +84,39 @@ $("#joinForm").onsubmit = async (e) => {
   joinedCode = code; try { localStorage.setItem("lost-code", code); } catch {}
 };
 
+let selLine = null, selText = "";
+const DEFAULT_SUB = "Tap, then keep listening";
+function setSel(i, text) {
+  selLine = i; selText = text || "";
+  if (!$("#lost").classList.contains("marked")) $("#lost .lost-sub").textContent = selLine === null ? DEFAULT_SUB : `At "${selText.length > 40 ? selText.slice(0, 40) + "…" : selText}"`;
+  $("#lost").classList.toggle("pointing", selLine !== null);
+  lastLines = ""; if (lastState) render(lastState);
+}
+
+function showRecent(lines, pointed) {
+  $("#recentTitle").textContent = pointed ? "Leading up to that line" : "The last 15 seconds";
+  $("#recentLines").innerHTML = lines.length ? lines.map((l) => `<p><time>${fmt(l.t)}</time>${esc(l.text)}</p>`).join("") : `<p class="note">Nothing was transcribed yet. Your summary after class will cover it.</p>`;
+  $("#recent").hidden = false;
+}
+$("#closeRecent").onclick = () => ($("#recent").hidden = true);
+
 $("#lost").onclick = async () => {
-  const r = await post("/api/tap");
+  const pointed = selLine !== null;
+  const r = await post("/api/tap", pointed ? { line: selLine } : {});
+  setSel(null);
   navigator.vibrate?.(40);
   if (!r.counted && r.reason) { flashAck(r.reason); return; }
+  if (r.recent) showRecent(r.recent, pointed);
   const others = r.others;
   // The button itself confirms the tap for a few seconds, then goes back to normal.
   const b = $("#lost"); b.classList.add("marked");
   b.querySelector(".lost-main").textContent = r.counted ? "Marked" : "Already marked";
   b.querySelector(".lost-sub").textContent = others ? `You and ${others} other${others === 1 ? "" : "s"}` : "Keep listening";
-  flashAck("You'll get a summary of this part after class.");
+  flashAck(pointed ? "Marked that line. Your professor sees it." : "You'll get a summary of this part after class.");
   clearTimeout(window.btnT); window.btnT = setTimeout(() => {
     b.classList.remove("marked");
     b.querySelector(".lost-main").textContent = "I'm lost";
-    b.querySelector(".lost-sub").textContent = "Tap, then keep listening";
+    b.querySelector(".lost-sub").textContent = DEFAULT_SUB;
   }, 5000);
 };
 
@@ -99,6 +128,7 @@ $("#showT").onclick = () => {
   $("#showT").classList.toggle("on", transcriptOpen);
   lastLines = ""; // redraw on next check-in
   if (transcriptOpen) { const box = $("#tlines"); box.scrollTop = box.scrollHeight; }
+  else if (selLine !== null) setSel(null);
 };
 
 function render(s) {
@@ -117,14 +147,15 @@ function render(s) {
   $("#statusText").textContent = { waiting: "Waiting for class to start", live: "Class is live", ended: "Class is over" }[s.phase];
   phase = s.phase; paintAck();
   if (!live && transcriptOpen) $("#showT").click();
+  if (!live) { if (selLine !== null) setSel(null); $("#recent").hidden = true; }
 
   if (transcriptOpen && s.lines) {
-    const key = s.lines.length + ":" + (s.lines.at(-1)?.text || "");
+    const key = s.lines.length + ":" + (s.lines.at(-1)?.text || "") + ":" + selLine + ":" + s.lines.filter((l) => l.mine).length;
     if (key !== lastLines) {
       lastLines = key;
       const box = $("#tlines");
       const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
-      box.innerHTML = s.lines.length ? s.lines.map((l) => `<p><time>${fmt(l.t)}</time>${esc(l.text)}</p>`).join("") : `<p class="note">Nothing yet. Words show up here as your professor talks.</p>`;
+      box.innerHTML = s.lines.length ? s.lines.map((l) => `<button class="tline${l.i === selLine ? " sel" : ""}${l.mine ? " mine" : ""}" data-i="${l.i}" aria-pressed="${l.i === selLine}"><time>${fmt(l.t)}</time>${esc(l.text)}</button>`).join("") : `<p class="note">Nothing yet. Words show up here as your professor talks.</p>`;
       if (atBottom) box.scrollTop = box.scrollHeight;
     }
   }
@@ -145,6 +176,13 @@ function render(s) {
       </article>`).join("") : `<p class="empty">You didn't tap in this class, so there's nothing to catch up on.</p>`;
   }
 }
+
+$("#tlines").onclick = (e) => {
+  const b = e.target.closest("button.tline"); if (!b) return;
+  const i = Number(b.dataset.i);
+  if (i === selLine) setSel(null);
+  else setSel(i, b.lastChild.textContent);
+};
 
 $("#catchups").onclick = async (e) => {
   const b = e.target.closest("button[data-i]"); if (!b) return;
