@@ -4,32 +4,36 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lost</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;600;800&display=swap">
 <link rel="stylesheet" href="style.css">
 </head>
-<body>
-<main class="student">
-  <section id="join">
+<body class="student">
+<main>
+  <section id="join" class="join">
     <h1>Lost</h1>
-    <p class="muted">Type the code on your professor's screen.</p>
-    <form id="joinForm" class="row">
-      <input id="code" maxlength="4" autocomplete="off" autocapitalize="characters" placeholder="CODE" aria-label="Class code" required>
-      <button class="primary">Join</button>
+    <p class="lede">Type the 4-letter code on your professor's screen.</p>
+    <form id="joinForm">
+      <input id="code" class="code-input" maxlength="4" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="CODE" aria-label="Class code" required>
+      <button class="primary big">Join class</button>
     </form>
-    <p id="joinErr" role="alert" style="color:var(--accent)"></p>
+    <p id="joinErr" class="note warn" role="alert"></p>
   </section>
 
-  <section id="live" hidden>
-    <div id="videoBox" hidden style="position:relative">
-      <video id="video" autoplay playsinline style="width:100%;border-radius:12px;background:#000"></video>
-      <button id="unmute" class="primary" hidden style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)">Tap for sound</button>
+  <section id="live" class="room" hidden>
+    <div id="videoBox" class="feed" hidden>
+      <video id="video" autoplay playsinline></video>
+      <button id="unmute" class="primary" hidden>Tap to hear your professor</button>
     </div>
-    <p class="muted" style="text-align:center" id="liveNote">Tap when you get lost. Nobody sees who tapped.</p>
-    <button class="lostbtn" id="lost">I'm lost</button>
-    <p id="ack" aria-live="polite"></p>
+    <button class="lostbtn" id="lost"><span class="lost-main">I'm lost</span><span class="lost-sub">Tap, then keep listening</span></button>
+    <p class="note center" id="liveNote">Nobody sees who tapped.</p>
+    <p id="ack" class="ack" aria-live="polite"></p>
   </section>
 
-  <section id="after" hidden>
-    <h1>Your lost moments</h1>
+  <section id="after" class="after" hidden>
+    <h1>Catch up</h1>
+    <p class="lede">These are the parts of class where you tapped.</p>
     <div id="catchups"></div>
   </section>
 </main>
@@ -58,9 +62,17 @@ $("#lost").onclick = async () => {
   navigator.vibrate?.(40);
   if (!r.counted && r.reason) { $("#ack").textContent = r.reason; return; }
   const others = r.others;
-  $("#ack").textContent = (r.counted ? "Marked. " : "Already marked. ") +
-    (others ? `You and ${others} other${others === 1 ? "" : "s"}. ` : "") + "Keep listening, you'll get a catch-up after class.";
-  clearTimeout(window.ackT); window.ackT = setTimeout(() => ($("#ack").textContent = ""), 6000);
+  // The button itself confirms the tap for a few seconds, then goes back to normal.
+  const b = $("#lost"); b.classList.add("marked");
+  b.querySelector(".lost-main").textContent = r.counted ? "Marked" : "Already marked";
+  b.querySelector(".lost-sub").textContent = others ? `You and ${others} other${others === 1 ? "" : "s"}` : "Keep listening";
+  $("#ack").textContent = "You'll get a catch-up for this part after class.";
+  clearTimeout(window.ackT); window.ackT = setTimeout(() => {
+    b.classList.remove("marked");
+    b.querySelector(".lost-main").textContent = "I'm lost";
+    b.querySelector(".lost-sub").textContent = "Tap, then keep listening";
+    $("#ack").textContent = "";
+  }, 5000);
 };
 
 function render(s) {
@@ -71,22 +83,22 @@ function render(s) {
   $("#live").hidden = !joined || s.phase === "ended" && s.sent;
   $("#after").hidden = !(joined && s.phase === "ended" && s.sent);
   $("#lost").disabled = s.phase !== "live";
-  $("#liveNote").textContent = s.phase === "waiting" ? "Waiting for class to start." :
-    s.phase === "ended" ? "Class is over. Your catch-up is on its way." : "Tap when you get lost. Nobody sees who tapped.";
+  $("#liveNote").textContent = s.phase === "waiting" ? "You're in. The button turns on when class starts." :
+    s.phase === "ended" ? "Class is over. Your catch-up will appear here." : "Nobody sees who tapped.";
   if (s.catchup) {
     const key = JSON.stringify(s.catchup.map((m) => [m.index, m.explanation]));
     if (key === lastCatch) return; lastCatch = key;
     $("#catchups").innerHTML = s.catchup.length ? s.catchup.map((m) => `
-      <article class="card catch">
-        <p class="muted">Around ${m.at}${m.topic ? " · " + esc(m.topic) : ""}</p>
+      <article class="catch">
+        <h2><span class="at">${m.at}</span>${m.topic ? esc(m.topic) : "Where you got lost"}</h2>
         ${m.explanation ? `<p>${esc(m.explanation)}</p>` : ""}
-        <details ${m.explanation ? "" : "open"}><summary>What the professor said</summary><p class="said">${esc(m.said)}</p></details>
-        ${m.question ? `<details><summary>Practice: ${esc(m.question)}</summary><p>${esc(m.answer)}</p></details>` : ""}
-        <div class="row" style="margin-top:12px">
+        <details ${m.explanation ? "" : "open"}><summary>What your professor said</summary><blockquote class="said">${esc(m.said)}</blockquote></details>
+        ${m.question ? `<details><summary>Check yourself: ${esc(m.question)}</summary><p>${esc(m.answer)}</p></details>` : ""}
+        <div class="controls-row">
           <button data-i="${m.index}" data-k="still">Still confused</button>
-          <button data-i="${m.index}" data-k="unhelpful">This didn't help</button>
+          <button data-i="${m.index}" data-k="unhelpful" class="quiet">This didn't help</button>
         </div>
-      </article>`).join("") : `<p class="muted">You didn't tap today. Nothing to catch up on.</p>`;
+      </article>`).join("") : `<p class="empty">You didn't tap in this class, so there's nothing to catch up on.</p>`;
   }
 }
 
@@ -112,8 +124,7 @@ async function onOffer(data) {
     $("#videoBox").hidden = false;
     // sound-only call: keep a slim bar instead of a big black box
     const hasVideo = e.streams[0].getVideoTracks().length > 0;
-    v.style.height = hasVideo ? "" : "48px";
-    $("#liveNote").dataset.sound = hasVideo ? "" : "You're hearing your professor live.";
+    $("#videoBox").classList.toggle("sound-only", !hasVideo);
     v.muted = false;
     // Browsers block sound until the page has been clicked; offer a button if that happens.
     v.play().catch(() => { v.muted = true; v.play(); $("#unmute").hidden = false; });

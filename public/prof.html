@@ -4,68 +4,77 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lost · Professor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;600;800&display=swap">
 <link rel="stylesheet" href="style.css">
 </head>
-<body>
-<main>
-  <div class="row" style="justify-content:space-between">
-    <div>
-      <h1>Lost <span id="phaseTag" class="tag"></span></h1>
-      <p class="muted" id="joinHint">Students go to <b id="url"></b> and type the code.</p>
-    </div>
-    <div style="text-align:right">
-      <div class="code" id="code">····</div>
-      <div class="muted"><span id="joined">0</span> joined · <span id="clock">0:00</span></div>
-    </div>
+<body class="prof" data-phase="waiting">
+<header class="bar">
+  <div class="brand">Lost <span id="phaseTag" class="phase"></span></div>
+  <div class="bar-stats">
+    <span><b id="joined">0</b> joined</span>
+    <span id="clock">0:00</span>
+    <span class="bar-code">Code <b id="codeSmall"></b></span>
   </div>
+</header>
 
-  <div class="row" style="margin-top:12px">
-    <button class="primary" id="start">Start class</button>
+<main>
+  <section class="welcome">
+    <p class="lede">Students open <span id="url"></span> and type this code.</p>
+    <div class="sign"><span class="sign-label">Class code</span><span class="sign-code" id="code">····</span></div>
+    <button class="primary big" id="start">Start class</button>
+    <p class="note">Starting turns on live captions from your mic. You can share your camera before or after.</p>
+  </section>
+
+  <section class="liveview">
+    <div class="stage">
+      <div id="camBox" class="cam" hidden>
+        <video id="preview" autoplay muted playsinline></video>
+        <p class="note" id="camNote"></p>
+      </div>
+      <div class="captions">
+        <h2>Live captions</h2>
+        <div id="transcript" aria-live="off"></div>
+        <p id="interim"></p>
+        <form id="typeForm"><input id="typed" placeholder="Mic not picking you up? Type here and press Enter" aria-label="Type a caption"></form>
+        <p class="note warn" id="micErr"></p>
+      </div>
+    </div>
+    <div class="strip">
+      <h2>When students tapped</h2>
+      <svg id="timeline" viewBox="0 0 300 70" preserveAspectRatio="none" role="img" aria-label="Taps over time"></svg>
+      <p class="note">Each bar is 15 seconds of class.</p>
+    </div>
+  </section>
+
+  <section id="reportCard" class="report" hidden>
+    <div class="report-head">
+      <h2>Where the class got lost</h2>
+      <button class="primary" id="send">Send catch-up to students</button>
+    </div>
+    <p class="note" id="aiNote"></p>
+    <div id="moments"></div>
+  </section>
+
+  <footer class="controls">
     <button id="mic" disabled>Mic: off</button>
     <button id="cam">Share camera + mic: off</button>
     <button id="end" disabled>End class</button>
-    <button id="reset">New class</button>
-  </div>
-
-  <div class="grid">
-    <section class="card">
-      <h2>Live transcript</h2>
-      <div id="transcript" aria-live="off"></div>
-      <p id="interim"></p>
-      <form id="typeForm" class="row">
-        <input id="typed" style="flex:1" placeholder="Mic not working? Type what you're saying and press Enter">
-      </form>
-      <p class="muted" id="micErr"></p>
-    </section>
-    <aside class="card">
-      <div id="camBox" hidden style="margin-bottom:16px">
-        <video id="preview" autoplay muted playsinline style="width:100%;border-radius:8px;background:#000"></video>
-        <p class="muted" style="font-size:13px" id="camNote"></p>
-      </div>
-      <h2>Taps this class</h2>
-      <svg id="timeline" viewBox="0 0 300 70" preserveAspectRatio="none" role="img" aria-label="Taps over time"></svg>
-      <p class="muted" style="font-size:13px">Each bar is 15 seconds.</p>
-      <h2 style="margin-top:20px">Demo mode <span class="tag demo">FAKE DATA</span></h2>
-      <p class="muted" style="font-size:14px">For when the room is too loud or there's only one tester. Everything here is labelled fake.</p>
-      <div class="row">
+    <button id="reset" class="quiet">New class</button>
+    <details class="demo">
+      <summary>Demo tools (fake data)</summary>
+      <p class="note">For a loud room or testing alone. Say out loud when you use these.</p>
+      <div class="controls-row">
         <button id="playLecture" disabled>Play sample lecture</button>
-        <button id="addStudents">+10 fake students</button>
-        <button id="fakeTaps" disabled>5 fake taps now</button>
+        <button id="addStudents">Add 10 fake students</button>
+        <button id="fakeTaps" disabled>Add 5 fake taps</button>
       </div>
-    </aside>
-  </div>
-
-  <section id="reportCard" class="card" style="margin-top:16px" hidden>
-    <div class="row" style="justify-content:space-between">
-      <h2>After-class report</h2>
-      <button class="primary" id="send">Send catch-up to students</button>
-    </div>
-    <p class="muted" id="aiNote"></p>
-    <div id="moments"></div>
-  </section>
+    </details>
+  </footer>
 </main>
 
-<div class="counter" id="counter">0 lost right now</div>
+<div class="counter" id="counter" role="status">Nobody lost right now</div>
 
 <script>
 const $ = (s) => document.querySelector(s);
@@ -77,17 +86,19 @@ const post = (url, data = {}) => fetch(url, { method: "POST", headers: { "x-prof
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const fmt = (t) => { const s = Math.max(0, Math.round(t)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
 
-$("#url").textContent = location.hostname === "localhost" ? "the student link printed in the terminal" : location.origin;
+$("#url").textContent = location.hostname === "localhost" ? "the student link from the terminal" : location.host;
 
 let state = null, lastLines = "", lastReport = "";
 
 function render(s) {
   state = s;
   $("#code").textContent = s.code;
+  $("#codeSmall").textContent = s.code;
+  document.body.dataset.phase = s.phase;
   $("#joined").textContent = s.joined;
   $("#clock").textContent = fmt(s.elapsed);
-  $("#phaseTag").textContent = { waiting: "not started", live: "LIVE", ended: "ended" }[s.phase];
-  $("#phaseTag").className = "tag" + (s.phase === "live" ? " live" : "");
+  $("#phaseTag").textContent = { waiting: "Not started", live: "Live", ended: "Class over" }[s.phase];
+  $("#phaseTag").className = "phase " + s.phase;
   $("#start").disabled = s.phase !== "waiting";
   $("#end").disabled = s.phase !== "live";
   $("#mic").disabled = s.phase !== "live" || !Rec;
@@ -136,16 +147,16 @@ function renderReport(r) {
   $("#send").textContent = r.sent ? "Sent to students" : "Send catch-up to students";
   $("#moments").innerHTML = r.moments.length ? r.moments.map((m) => `
     <article class="moment">
-      <div class="row" style="justify-content:space-between">
-        <strong>Around ${m.at}${m.topic ? " · " + esc(m.topic) : ""}</strong>
-        <span>${m.count} student${m.count === 1 ? "" : "s"} (${Math.round(m.share * 100)}%)</span>
+      <div class="moment-head">
+        <h3><span class="at">${m.at}</span>${m.topic ? esc(m.topic) : "Students got lost here"}</h3>
+        <span class="who">${m.count} student${m.count === 1 ? "" : "s"}, ${Math.round(m.share * 100)}% of the class</span>
       </div>
-      <div class="bar" style="margin:8px 0"><div style="width:${Math.round(m.share * 100)}%"></div></div>
-      <p class="said">"${esc(m.said)}"</p>
-      ${m.reteach ? `<p><b>Try next class:</b> ${esc(m.reteach)}</p>` : ""}
-      ${m.explanation ? `<details><summary>Catch-up students will get</summary><p>${esc(m.explanation)}</p><p><i>${esc(m.question)}</i> ${esc(m.answer)}</p></details>` : ""}
-      ${r.sent ? `<p class="muted">${m.stillConfused} still confused · ${m.unhelpful} said it didn't help</p>` : ""}
-    </article>`).join("") : `<p class="muted">Nobody tapped this class.</p>`;
+      <div class="share"><div style="width:${Math.max(2, Math.round(m.share * 100))}%"></div></div>
+      <blockquote class="said">${esc(m.said)}</blockquote>
+      ${m.reteach ? `<p class="reteach"><span>Try next class</span>${esc(m.reteach)}</p>` : ""}
+      ${m.explanation ? `<details><summary>What students will get</summary><p>${esc(m.explanation)}</p><p><em>${esc(m.question)}</em> ${esc(m.answer)}</p></details>` : ""}
+      ${r.sent ? `<p class="note">${m.stillConfused} still confused. ${m.unhelpful} said the catch-up didn't help.</p>` : ""}
+    </article>`).join("") : `<p class="empty">Nobody tapped during this class.</p>`;
 }
 
 // ---------- speech to text (Chrome) ----------
