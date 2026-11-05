@@ -69,7 +69,11 @@
 
 <script>
 const $ = (s) => document.querySelector(s);
-const post = (url, data = {}) => fetch(url, { method: "POST", body: JSON.stringify(data) }).then((r) => r.json());
+// The professor key comes from the private link printed in the terminal. Keep it out of the address bar after reading it.
+let KEY = new URLSearchParams(location.search).get("key");
+try { if (KEY) sessionStorage.setItem("lost-key", KEY); else KEY = sessionStorage.getItem("lost-key"); } catch {}
+if (KEY) history.replaceState(null, "", "/prof");
+const post = (url, data = {}) => fetch(url, { method: "POST", headers: { "x-prof-key": KEY || "" }, body: JSON.stringify(data) }).then((r) => r.json());
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const fmt = (t) => { const s = Math.max(0, Math.round(t)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
 
@@ -235,7 +239,8 @@ $("#cam").onclick = async () => {
   if (state) syncCalls(state);
 };
 
-const es = new EventSource("/events?role=prof");
+if (!KEY) document.querySelector("main").innerHTML = "<h1>Professor link needed</h1><p class='muted'>Open the professor link printed in the terminal when the server started. It has a private key at the end.</p>";
+const es = new EventSource(`/events?role=prof&key=${encodeURIComponent(KEY || "")}`);
 es.onmessage = (e) => { const s = JSON.parse(e.data); render(s); syncCalls(s); };
 es.addEventListener("signal", async (e) => {
   const { from, data } = JSON.parse(e.data);
