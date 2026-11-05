@@ -44,7 +44,7 @@ const SECURITY_HEADERS = {
   "x-content-type-options": "nosniff",
   "x-frame-options": "DENY",
   "referrer-policy": "no-referrer",
-  "content-security-policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; media-src 'self' blob: mediastream:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+  "content-security-policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
   "permissions-policy": "geolocation=(), payment=(), usb=()",
 };
 const PROF_ONLY = new Set(["/api/start", "/api/line", "/api/end", "/api/send", "/api/reset", "/api/demo-taps", "/api/demo-students"]);
@@ -79,7 +79,7 @@ function lostNow() {
   return new Set(S.taps.filter((x) => t - x.t <= LOOKBACK).map((x) => x.id));
 }
 
-// ---------- server-sent events ----------
+// ---------- check-ins ----------
 const clients = { student: new Map() }; // student id -> last check-in time
 
 function profView() {
@@ -90,7 +90,6 @@ function profView() {
     code: S.code, phase: S.phase, elapsed: now(), joined,
     lostCount: lost.size, share, alert: lost.size > 0 && share >= ALERT_SHARE,
     lines: S.lines.slice(-40),
-    viewers: viewers(),
     taps: S.taps.map((x) => x.t),
     report: S.report && {
       ...S.report,
@@ -103,7 +102,7 @@ function profView() {
   };
 }
 
-function studentView(id) {
+function studentView(id, wantLines) {
   const mine = S.report?.sent
     ? S.report.moments.map((m, i) => ({ ...m, index: i })).filter((m) => m.ids.includes(id))
     : null;
@@ -112,14 +111,16 @@ function studentView(id) {
     joined: S.students.has(id),
     catchup: mine && mine.map(({ ids, ...m }) => m),
     sent: !!S.report?.sent,
+    // live transcript, only while the student has it open
+    lines: wantLines && S.phase === "live" ? S.lines.slice(-60) : null,
     audio: relay.header ? { id: relay.id, seq: relay.seq } : null,
   };
 }
 
-// ---------- backup audio relay ----------
-// The direct laptop-to-laptop call (WebRTC) often can't get through two home routers without a
-// paid relay server. As a backup, the professor's page uploads its sound in 1-second WebM pieces and
-// students fetch them. Piece 0 holds the file header every player needs first.
+// ---------- professor's sound ----------
+// The professor's page uploads its mic in 1-second WebM pieces and students who tap Listen fetch
+// them. Going through the server works across any two networks. Piece 0 holds the file header
+// every player needs first.
 const relay = { id: 0, seq: -1, header: null, pieces: new Map() };
 function readRaw(req, limit) {
   return new Promise((ok) => {
@@ -130,21 +131,8 @@ function readRaw(req, limit) {
 }
 
 // Pages check in every second (GET /api/poll). Streams were dropped because the Cloudflare
-// tunnel holds back streaming responses. Video setup messages wait in a mailbox until the next check-in.
-const mailbox = new Map(); // recipient id ("prof" or student id) -> [messages]
-function sendSignal(to, data) {
-  if (!mailbox.has(to)) mailbox.set(to, []);
-  const box = mailbox.get(to); box.push(data);
-  if (box.length > 200) box.splice(0, box.length - 200);
-}
-
-// Students whose page checked in recently: the professor's page opens one video call per viewer.
-function viewers() {
-  const t = Date.now();
-  return [...clients.student].filter(([id, seen]) => t - seen < 5000 && S.students.has(id)).map(([id]) => id);
-}
-function broadcast() {} // nothing to push; pages pick up changes on their next check-in
-setInterval(() => { const t = Date.now(); for (const [id, seen] of clients.student) if (t - seen > 60000) { clients.student.delete(id); mailbox.delete(id); } }, 30000);
+// tunnel holds back streaming responses.
+setInterval(() => { const t = Date.now(); for (const [id, seen] of clients.student) if (t - seen > 60000) clients.student.delete(id); }, 30000);
 
 // ---------- report ----------
 function fmt(t) { const s = Math.max(0, Math.round(t)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
@@ -251,7 +239,6 @@ const routes = {
     S.phase = "ended";
     const moments = buildMoments();
     S.report = { moments, ai: !!ai, aiStatus: ai ? "working" : "off", sent: false };
-    broadcast();
     try {
       const extra = await explain(moments);
       if (extra) moments.forEach((m, i) => Object.assign(m, extra[i] || {}));
@@ -271,14 +258,6 @@ const routes = {
     return {};
   },
   "POST /api/reset": async () => { reset(); return {}; },
-  // Relays WebRTC setup messages (offer, answer, network candidates) between professor and students.
-  // Students may only talk to the professor; only the professor (with the key) may talk to students.
-  "POST /api/signal": async (b, prof) => {
-    if (!b.data || typeof b.data !== "object") return {};
-    if (prof) { if (clients.student.has(b.to)) sendSignal(b.to, { from: "prof", data: b.data }); }
-    else if (b.to === "prof" && S.students.has(b.from)) sendSignal("prof", { from: b.from, data: b.data });
-    return {};
-  },
 };
 
 const server = http.createServer(async (req, res) => {
@@ -310,13 +289,13 @@ const server = http.createServer(async (req, res) => {
     const role = url.searchParams.get("role");
     if (role === "prof") {
       if (!prof) { json(res, { error: "Professor only" }, 403); return; }
-      json(res, { state: profView(), signals: mailbox.get("prof")?.splice(0) || [] }); return;
+      json(res, { state: profView() }); return;
     }
     const id = url.searchParams.get("id");
     if (!validId(id)) { json(res, { error: "Bad id" }, 400); return; }
     if (!clients.student.has(id) && clients.student.size >= MAX_STREAMS) { json(res, { error: "Busy" }, 503); return; }
     clients.student.set(id, Date.now());
-    json(res, { state: studentView(id), signals: mailbox.get(id)?.splice(0) || [] }); return;
+    json(res, { state: studentView(id, url.searchParams.get("lines") === "1") }); return;
   }
   const handler = routes[`${req.method} ${url.pathname}`];
   if (handler) {
@@ -324,7 +303,6 @@ const server = http.createServer(async (req, res) => {
     const b = await body(req);
     if (b === null) { if (!res.headersSent) json(res, { error: "Too large" }, 413); return; }
     const out = await handler(b, prof); json(res, out);
-    if (url.pathname !== "/api/signal") broadcast();
     return;
   }
   if (req.method !== "GET") { res.writeHead(405, SECURITY_HEADERS); res.end(); return; }

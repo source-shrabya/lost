@@ -22,16 +22,24 @@
   </section>
 
   <section id="live" class="room" hidden>
-    <div id="videoBox" class="feed" hidden>
-      <video id="video" autoplay playsinline></video>
-      <button id="unmute" class="primary" hidden>Tap to hear your professor</button>
-    </div>
-    <p id="mediaStatus" class="note center" aria-live="polite"></p>
-    <button id="hearRelay" class="primary" hidden>Tap to hear your professor</button>
-    <audio id="relayAudio"></audio>
+    <header class="topline">
+      <span class="status"><span class="dot" id="dot"></span><span id="statusText">Waiting for class</span></span>
+      <span class="note">Class <b id="classCode"></b></span>
+    </header>
+
     <button class="lostbtn" id="lost"><span class="lost-main">I'm lost</span><span class="lost-sub">Tap, then keep listening</span></button>
-    <p class="note center" id="liveNote">Nobody sees who tapped.</p>
     <p id="ack" class="ack" aria-live="polite"></p>
+
+    <div class="tools">
+      <button id="listen" class="tool" disabled>Listen to class</button>
+      <button id="showT" class="tool" aria-expanded="false" aria-controls="tpanel" disabled>Show transcript</button>
+    </div>
+    <p id="listenNote" class="note center" aria-live="polite"></p>
+    <audio id="relayAudio"></audio>
+
+    <div id="tpanel" class="tpanel" hidden>
+      <div id="tlines" class="tlines"></div>
+    </div>
   </section>
 
   <section id="after" class="after" hidden>
@@ -49,8 +57,14 @@ if (!id) { id = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.
 const $ = (s) => document.querySelector(s);
 const post = (url, data) => fetch(url, { method: "POST", body: JSON.stringify({ id, ...data }) }).then((r) => r.json());
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const fmt = (t) => { const s = Math.max(0, Math.round(t)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
 let joinedCode = null; try { joinedCode = localStorage.getItem("lost-code"); } catch {}
-let lastCatch = "";
+let lastCatch = "", lastLines = "", transcriptOpen = false, offline = false;
+// The line under the button: a short message after a tap, otherwise what the phase calls for.
+let ackOverride = "", phase = "waiting";
+const PHASE_ACK = { waiting: "The button turns on when class starts.", live: "Nobody sees who tapped.", ended: "Your summary shows up here once your professor sends it." };
+function paintAck() { $("#ack").textContent = offline ? "Reconnecting…" : ackOverride || PHASE_ACK[phase]; }
+function flashAck(t, ms = 5000) { ackOverride = t; paintAck(); clearTimeout(window.ackT); window.ackT = setTimeout(() => { ackOverride = ""; paintAck(); }, ms); }
 
 $("#joinForm").onsubmit = async (e) => {
   e.preventDefault();
@@ -63,31 +77,58 @@ $("#joinForm").onsubmit = async (e) => {
 $("#lost").onclick = async () => {
   const r = await post("/api/tap");
   navigator.vibrate?.(40);
-  if (!r.counted && r.reason) { $("#ack").textContent = r.reason; return; }
+  if (!r.counted && r.reason) { flashAck(r.reason); return; }
   const others = r.others;
   // The button itself confirms the tap for a few seconds, then goes back to normal.
   const b = $("#lost"); b.classList.add("marked");
   b.querySelector(".lost-main").textContent = r.counted ? "Marked" : "Already marked";
   b.querySelector(".lost-sub").textContent = others ? `You and ${others} other${others === 1 ? "" : "s"}` : "Keep listening";
-  $("#ack").textContent = "You'll get a catch-up for this part after class.";
-  clearTimeout(window.ackT); window.ackT = setTimeout(() => {
+  flashAck("You'll get a summary of this part after class.");
+  clearTimeout(window.btnT); window.btnT = setTimeout(() => {
     b.classList.remove("marked");
     b.querySelector(".lost-main").textContent = "I'm lost";
     b.querySelector(".lost-sub").textContent = "Tap, then keep listening";
-    $("#ack").textContent = "";
   }, 5000);
+};
+
+$("#showT").onclick = () => {
+  transcriptOpen = !transcriptOpen;
+  $("#tpanel").hidden = !transcriptOpen;
+  $("#showT").textContent = transcriptOpen ? "Hide transcript" : "Show transcript";
+  $("#showT").setAttribute("aria-expanded", transcriptOpen);
+  $("#showT").classList.toggle("on", transcriptOpen);
+  lastLines = ""; // redraw on next check-in
+  if (transcriptOpen) { const box = $("#tlines"); box.scrollTop = box.scrollHeight; }
 };
 
 function render(s) {
   // rejoin automatically after a server restart or new class (code changes)
   if (!s.joined && joinedCode && joinedCode === s.code) post("/api/join", { code: joinedCode });
-  const joined = s.joined;
+  const joined = s.joined, done = joined && s.phase === "ended" && s.sent;
   $("#join").hidden = joined;
-  $("#live").hidden = !joined || s.phase === "ended" && s.sent;
-  $("#after").hidden = !(joined && s.phase === "ended" && s.sent);
-  $("#lost").disabled = s.phase !== "live";
-  $("#liveNote").textContent = s.phase === "waiting" ? "You're in. The button turns on when class starts." :
-    s.phase === "ended" ? "Class is over. Your catch-up will appear here." : "Nobody sees who tapped.";
+  $("#live").hidden = !joined || done;
+  $("#after").hidden = !done;
+  $("#classCode").textContent = s.code;
+
+  const live = s.phase === "live";
+  $("#lost").disabled = !live;
+  $("#showT").disabled = !live;
+  $("#dot").className = "dot " + s.phase;
+  $("#statusText").textContent = { waiting: "Waiting for class to start", live: "Class is live", ended: "Class is over" }[s.phase];
+  phase = s.phase; paintAck();
+  if (!live && transcriptOpen) $("#showT").click();
+
+  if (transcriptOpen && s.lines) {
+    const key = s.lines.length + ":" + (s.lines.at(-1)?.text || "");
+    if (key !== lastLines) {
+      lastLines = key;
+      const box = $("#tlines");
+      const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+      box.innerHTML = s.lines.length ? s.lines.map((l) => `<p><time>${fmt(l.t)}</time>${esc(l.text)}</p>`).join("") : `<p class="note">Nothing yet. Words show up here as your professor talks.</p>`;
+      if (atBottom) box.scrollTop = box.scrollHeight;
+    }
+  }
+
   if (s.catchup) {
     const key = JSON.stringify(s.catchup.map((m) => [m.index, m.explanation]));
     if (key === lastCatch) return; lastCatch = key;
@@ -111,63 +152,46 @@ $("#catchups").onclick = async (e) => {
   b.disabled = true; b.textContent = "Sent to your professor";
 };
 
-// ---------- professor's camera + mic (WebRTC) ----------
-let pc = null;
-const signal = (data) => post("/api/signal", { from: id, to: "prof", data });
-
-async function onOffer(data) {
-  pc?.close();
-  pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
-  const call = data.call;
-  pc.call = call; pc.pending = [];
-  pc.onicecandidate = (e) => e.candidate && signal({ call, candidate: e.candidate });
-  pc.ontrack = (e) => {
-    const v = $("#video");
-    if (v.srcObject !== e.streams[0]) v.srcObject = e.streams[0];
-    $("#videoBox").hidden = false;
-    // sound-only call: keep a slim bar instead of a big black box
-    const hasVideo = e.streams[0].getVideoTracks().length > 0;
-    $("#videoBox").classList.toggle("sound-only", !hasVideo);
-    v.muted = false;
-    // Browsers block sound until the page has been clicked; offer a button if that happens.
-    v.play().catch(() => { v.muted = true; v.play(); $("#unmute").hidden = false; });
-  };
-  const thisPc = pc;
-  pc.onconnectionstatechange = () => {
-    if (thisPc !== pc) return;
-    rtcOk = pc.connectionState === "connected";
-    if (["closed", "failed", "disconnected"].includes(pc.connectionState)) $("#videoBox").hidden = true;
-  };
-  const mine = pc;
-  await mine.setRemoteDescription(data.sdp);
-  for (const c of mine.pending.splice(0)) mine.addIceCandidate(c).catch(() => {});
-  await mine.setLocalDescription(await mine.createAnswer());
-  if (pc !== mine) return; // a newer call replaced this one
-  signal({ call, sdp: pc.localDescription });
-}
-$("#unmute").onclick = () => { const v = $("#video"); v.muted = false; v.play(); $("#unmute").hidden = true; };
-
-// ---------- backup audio through the Lost server ----------
-// If the direct connection isn't up 6 seconds after the professor shares their mic, play the
-// 1-second pieces the professor's page uploads to the server instead.
-let rtcOk = false, audioSeenAt = 0, relayPlayer = null;
+// ---------- professor's sound through the Lost server ----------
+// The professor's page uploads its mic in 1-second pieces; the student plays them back to back.
+// Off until the student taps Listen, since students sitting in the room don't need it.
+let wantSound = false, relayPlayer = null;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const setStatus = (t) => { if ($("#mediaStatus").textContent !== t) $("#mediaStatus").textContent = t; };
+const setListenNote = (t) => { if ($("#listenNote").textContent !== t) $("#listenNote").textContent = t; };
 
+$("#listen").onclick = () => {
+  wantSound = !wantSound;
+  if (!wantSound) stopRelayPlayer();
+  else if (lastState?.audio) startRelayPlayer(lastState.audio);
+  paintListen(lastState);
+};
+
+function paintListen(s) {
+  const b = $("#listen");
+  const available = !!(s && s.joined && s.phase === "live" && s.audio);
+  b.disabled = !available;
+  b.classList.toggle("on", wantSound && available);
+  b.textContent = wantSound && available ? "Stop listening" : "Listen to class";
+  if (!s || s.phase !== "live") setListenNote("");
+  else if (!s.audio) setListenNote("Your professor's mic isn't shared right now.");
+  else if (wantSound) setListenNote("Listening. About 2 seconds behind the room.");
+  else setListenNote("In the room? You don't need to listen here.");
+}
+
+let lastState = null;
 function handleAudio(s) {
-  if (!s.joined || s.phase === "ended") { stopRelayPlayer(); setStatus(""); return; }
-  if (rtcOk) { stopRelayPlayer(); setStatus("You're connected to your professor live."); return; }
-  if (!s.audio) { audioSeenAt = 0; stopRelayPlayer(); setStatus("Your professor hasn't shared their mic yet."); return; }
-  if (!audioSeenAt) audioSeenAt = Date.now();
-  if (Date.now() - audioSeenAt < 6000) { setStatus("Connecting to your professor…"); return; }
-  if (!relayPlayer || relayPlayer.id !== s.audio.id) startRelayPlayer(s.audio);
-  else relayPlayer.latest = s.audio.seq;
-  setStatus("Hearing your professor through the backup line, about 2 seconds behind.");
+  lastState = s;
+  if (!s.joined || s.phase !== "live" || !s.audio) stopRelayPlayer();
+  else if (wantSound) {
+    if (!relayPlayer || relayPlayer.id !== s.audio.id) startRelayPlayer(s.audio);
+    else relayPlayer.latest = s.audio.seq;
+  }
+  paintListen(s);
 }
 
 function startRelayPlayer(a) {
   stopRelayPlayer();
-  if (!window.MediaSource || !MediaSource.isTypeSupported('audio/webm; codecs="opus"')) { setStatus("This browser can't play the backup audio. Try Chrome."); return; }
+  if (!window.MediaSource || !MediaSource.isTypeSupported('audio/webm; codecs="opus"')) { setListenNote("This browser can't play the sound. Try Chrome."); return; }
   const el = $("#relayAudio"), ms = new MediaSource();
   const p = { id: a.id, latest: a.seq, next: 1, sb: null, el, url: URL.createObjectURL(ms) };
   relayPlayer = p;
@@ -179,7 +203,7 @@ function startRelayPlayer(a) {
     p.next = Math.max(1, p.latest); // start near "now", not at the beginning
     pump(p);
   }, { once: true });
-  el.play().catch(() => ($("#hearRelay").hidden = false));
+  el.play().catch(() => {}); // started from the Listen tap, so the browser allows sound
 }
 
 async function appendPiece(p, n) {
@@ -200,6 +224,7 @@ async function pump(p) {
     else await sleep(250);
     const b = p.el.buffered;
     if (b.length && b.end(b.length - 1) - p.el.currentTime > 3.5) p.el.currentTime = b.end(b.length - 1) - 0.8; // stay close to live
+    if (p.el.paused && b.length) p.el.play().catch(() => {});
   }
 }
 
@@ -207,32 +232,18 @@ function stopRelayPlayer() {
   if (!relayPlayer) return;
   const p = relayPlayer; relayPlayer = null;
   p.el.pause(); p.el.removeAttribute("src"); p.el.load(); URL.revokeObjectURL(p.url);
-  $("#hearRelay").hidden = true;
-}
-$("#hearRelay").onclick = () => { relayPlayer?.el.play(); $("#hearRelay").hidden = true; };
-
-async function onSignal({ data }) {
-  if (data.sdp) await onOffer(data);
-  else if (data.candidate && pc && pc.call === data.call) {
-    if (pc.remoteDescription) pc.addIceCandidate(data.candidate).catch(() => {});
-    else pc.pending.push(data.candidate);
-  }
 }
 
 // Check in with the server every second. Simple polling works through any proxy or tunnel.
-let saidHello = false, offline = false;
 async function poll() {
   try {
-    const r = await fetch(`/api/poll?role=student&id=${id}`, { cache: "no-store" });
+    const r = await fetch(`/api/poll?role=student&id=${id}${transcriptOpen ? "&lines=1" : ""}`, { cache: "no-store" });
     if (!r.ok) throw new Error(r.status);
-    const { state, signals } = await r.json();
-    if (offline) { offline = false; $("#ack").textContent = ""; }
+    const { state } = await r.json();
+    offline = false;
     render(state);
     handleAudio(state);
-    // after a reload, ask the professor's page to restart the video call
-    if (state.joined && !saidHello) { saidHello = true; signal({ hello: true }); }
-    for (const s of signals) await onSignal(s);
-  } catch { offline = true; $("#ack").textContent = "Reconnecting…"; }
+  } catch { offline = true; paintAck(); }
   setTimeout(poll, 1000);
 }
 poll();

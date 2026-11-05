@@ -16,6 +16,7 @@
     <span><b id="joined">0</b> joined</span>
     <span id="clock">0:00</span>
     <span class="bar-code">Code <b id="codeSmall"></b></span>
+    <button id="end" class="primary" disabled>End class</button>
   </div>
 </header>
 
@@ -24,22 +25,20 @@
     <p class="lede">Students open <span id="url"></span> and type this code.</p>
     <div class="sign"><span class="sign-label">Class code</span><span class="sign-code" id="code">····</span></div>
     <button class="primary big" id="start">Start class</button>
-    <p class="note">Starting turns on live captions from your mic. You can share your camera before or after.</p>
+    <p class="note">Starting turns on your mic. Your words become the transcript, and students who aren't in the room can listen.</p>
   </section>
 
   <section class="liveview">
-    <div class="stage">
-      <div id="camBox" class="cam" hidden>
-        <video id="preview" autoplay muted playsinline></video>
-        <p class="note" id="camNote"></p>
+    <div class="captions">
+      <div class="captions-head">
+        <h2>Transcript</h2>
+        <button id="mic" class="tool" disabled>Mic off</button>
       </div>
-      <div class="captions">
-        <h2>Live captions</h2>
-        <div id="transcript" aria-live="off"></div>
-        <p id="interim"></p>
-        <form id="typeForm"><input id="typed" placeholder="Mic not picking you up? Type here and press Enter" aria-label="Type a caption"></form>
-        <p class="note warn" id="micErr"></p>
-      </div>
+      <p class="note" id="soundNote"></p>
+      <div id="transcript" aria-live="off"></div>
+      <p id="interim"></p>
+      <form id="typeForm"><input id="typed" placeholder="Mic not picking you up? Type here and press Enter" aria-label="Type a line"></form>
+      <p class="note warn" id="micErr"></p>
     </div>
     <div class="strip">
       <h2>When students tapped</h2>
@@ -51,17 +50,14 @@
   <section id="reportCard" class="report" hidden>
     <div class="report-head">
       <h2>Where the class got lost</h2>
-      <button class="primary" id="send">Send catch-up to students</button>
+      <button class="primary" id="send">Send summaries to students</button>
     </div>
     <p class="note" id="aiNote"></p>
     <div id="moments"></div>
   </section>
 
   <footer class="controls">
-    <button id="mic" disabled>Mic: off</button>
-    <button id="cam">Share camera + mic: off</button>
-    <button id="end" disabled>End class</button>
-    <button id="reset" class="quiet">New class</button>
+    <button id="reset" class="quiet">Start a new class</button>
     <details class="demo">
       <summary>Demo tools (fake data)</summary>
       <p class="note">For a loud room or testing alone. Say out loud when you use these.</p>
@@ -101,10 +97,10 @@ function render(s) {
   $("#phaseTag").className = "phase " + s.phase;
   $("#start").disabled = s.phase !== "waiting";
   $("#end").disabled = s.phase !== "live";
-  $("#mic").disabled = s.phase !== "live" || !Rec;
+  $("#mic").disabled = s.phase !== "live";
   $("#playLecture").disabled = s.phase !== "live";
   $("#fakeTaps").disabled = s.phase !== "live";
-  if (s.phase !== "live" && listening) stopMic();
+  if (s.phase !== "live" && (listening || stream)) stopMic();
 
   const pct = Math.round(s.share * 100);
   $("#counter").textContent = s.lostCount ? `${s.lostCount} of ${s.joined} lost right now (${pct}%)` : "Nobody lost right now";
@@ -129,7 +125,7 @@ function drawTimeline(s) {
   const max = Math.max(3, ...counts), w = 300 / n;
   $("#timeline").innerHTML = counts.map((c, i) =>
     `<rect x="${i * w + 1}" y="${70 - (c / max) * 66}" width="${w - 2}" height="${(c / max) * 66}" fill="var(--accent)"><title>${fmt(i * bucket)}: ${c} tap(s)</title></rect>`
-  ).join("") + `<line x1="0" y1="69.5" x2="300" y2="69.5" stroke="var(--line)"/>`;
+  ).join("") + `<line x1="0" y1="69.5" x2="300" y2="69.5" stroke="var(--rule)"/>`;
 }
 
 function renderReport(r) {
@@ -144,7 +140,7 @@ function renderReport(r) {
     done: "Explanations drafted by Claude. Read them before you send.",
   }[r.aiStatus];
   $("#send").disabled = r.sent || r.aiStatus === "working" || !r.moments.length;
-  $("#send").textContent = r.sent ? "Sent to students" : "Send catch-up to students";
+  $("#send").textContent = r.sent ? "Sent to students" : "Send summaries to students";
   $("#moments").innerHTML = r.moments.length ? r.moments.map((m) => `
     <article class="moment">
       <div class="moment-head">
@@ -165,6 +161,10 @@ let rec = null, listening = false;
 if (!Rec) $("#micErr").textContent = "This browser has no speech-to-text. Use Chrome, or type below.";
 
 function startMic() {
+  startSound();
+  listening = true;
+  $("#mic").textContent = "Mic on"; $("#mic").classList.add("on"); $("#micErr").textContent = Rec ? "" : $("#micErr").textContent;
+  if (!Rec) return;
   rec = new Rec(); rec.continuous = true; rec.interimResults = true; rec.lang = "en-US";
   rec.onresult = (e) => {
     let interim = "";
@@ -176,12 +176,14 @@ function startMic() {
   };
   rec.onerror = (e) => { if (e.error === "not-allowed") { $("#micErr").textContent = "Mic blocked. Allow it in Chrome's address bar, or type below."; stopMic(); } };
   rec.onend = () => { if (listening) try { rec.start(); } catch {} }; // Chrome stops after silence; restart
-  listening = true; rec.start();
-  $("#mic").textContent = "Mic: on"; $("#micErr").textContent = "";
+  rec.start();
 }
-function stopMic() { listening = false; rec?.stop(); $("#mic").textContent = "Mic: off"; $("#interim").textContent = ""; }
+function stopMic() {
+  listening = false; rec?.stop(); stopSound();
+  $("#mic").textContent = "Mic off"; $("#mic").classList.remove("on"); $("#interim").textContent = "";
+}
 
-$("#start").onclick = async () => { await post("/api/start"); if (Rec) startMic(); };
+$("#start").onclick = async () => { await post("/api/start"); startMic(); };
 $("#mic").onclick = () => (listening ? stopMic() : startMic());
 $("#end").onclick = () => { stopMic(); post("/api/end"); };
 $("#reset").onclick = () => { stopMic(); lastReport = ""; post("/api/reset"); };
@@ -207,68 +209,18 @@ $("#playLecture").onclick = async () => {
 $("#addStudents").onclick = () => post("/api/demo-students", { n: 10 });
 $("#fakeTaps").onclick = () => post("/api/demo-taps", { n: 5 });
 
-// ---------- live camera + mic to students (WebRTC, one connection per student) ----------
-let stream = null;
-const pcs = new Map(); // student id -> RTCPeerConnection
-const ICE = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
-const signal = (to, data) => post("/api/signal", { from: "prof", to, data });
-
-let callSeq = 0;
-async function callStudent(id) {
-  pcs.get(id)?.close();
-  const pc = new RTCPeerConnection(ICE);
-  pc.call = ++callSeq; pc.pending = [];   // call id lets us ignore replies to an older call
-  pcs.set(id, pc);
-  stream.getTracks().forEach((t) => pc.addTrack(t, stream));
-  pc.onicecandidate = (e) => e.candidate && signal(id, { call: pc.call, candidate: e.candidate });
-  pc.onconnectionstatechange = updateCamNote;
-  await pc.setLocalDescription(await pc.createOffer());
-  signal(id, { call: pc.call, sdp: pc.localDescription });
-}
-function hangUpAll() { pcs.forEach((pc) => pc.close()); pcs.clear(); }
-function updateCamNote() {
-  const live = [...pcs.values()].filter((pc) => pc.connectionState === "connected").length;
-  $("#camNote").textContent = `Streaming to ${live} of ${pcs.size} student${pcs.size === 1 ? "" : "s"}.`;
-}
-function syncCalls(s) {
-  if (!stream) return;
-  for (const id of s.viewers) if (!pcs.has(id)) callStudent(id);
-  for (const [id, pc] of pcs) if (!s.viewers.includes(id)) { pc.close(); pcs.delete(id); }
-  updateCamNote();
-}
-
-$("#cam").onclick = async () => {
-  if (stream) {
-    hangUpAll(); stopRelay(); stream.getTracks().forEach((t) => t.stop()); stream = null;
-    $("#camBox").hidden = true; $("#cam").textContent = "Share camera + mic: off"; return;
-  }
-  const audio = { echoCancellation: true, noiseSuppression: true };
-  let soundOnly = false;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 }, audio });
-  } catch (e) {
-    // No camera (lid closed, iPhone camera disconnected): share sound only so the demo still works.
-    if (e.name !== "NotFoundError" && e.name !== "NotReadableError" && e.name !== "OverconstrainedError") { $("#micErr").textContent = "Camera or mic blocked: " + e.message; return; }
-    try { stream = await navigator.mediaDevices.getUserMedia({ audio }); soundOnly = true; }
-    catch (e2) { $("#micErr").textContent = "No camera or mic available: " + e2.message; return; }
-  }
-  $("#preview").srcObject = stream; $("#preview").hidden = soundOnly; $("#camBox").hidden = false;
-  $("#micErr").textContent = soundOnly ? "No camera found, so students get your sound only." : "";
-  $("#cam").textContent = soundOnly ? "Sharing sound only: on" : "Share camera + mic: on";
-  startRelay();
-  if (state) syncCalls(state);
-};
-
-// Backup audio: upload the mic in 1-second pieces through the Lost server, for students whose
-// direct connection can't get through their router. Uploads are chained so pieces arrive in order.
-let relayRec = null, relayChain = Promise.resolve();
-function startRelay() {
-  const tracks = stream.getAudioTracks();
-  if (!tracks.length || !window.MediaRecorder) return;
-  const type = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "";
-  if (!type) return; // Safari can't record WebM; students on this professor get the direct connection only
-  relayRec = new MediaRecorder(new MediaStream(tracks), { mimeType: type, audioBitsPerSecond: 32000 });
-  relayRec.onerror = (e) => console.error("[lost] backup audio recorder error", e.error);
+// ---------- professor's sound to students ----------
+// Upload the mic in 1-second pieces through the Lost server. Students who tap Listen play them.
+// Uploads are chained so pieces arrive in order.
+let stream = null, relayRec = null, relayChain = Promise.resolve();
+async function startSound() {
+  if (stream) return;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+  catch (e) { $("#soundNote").textContent = "Students can't listen: the mic is blocked (" + e.message + ")."; return; }
+  const type = window.MediaRecorder && MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "";
+  if (!type) { $("#soundNote").textContent = "Students can't listen from this browser. Use Chrome."; return; }
+  relayRec = new MediaRecorder(stream, { mimeType: type, audioBitsPerSecond: 32000 });
+  relayRec.onerror = (e) => console.error("[lost] sound recorder error", e.error);
   let first = true;
   relayRec.ondataavailable = (e) => {
     if (!e.data.size) return;
@@ -276,34 +228,25 @@ function startRelay() {
     relayChain = relayChain.then(() => fetch(`/api/audio?first=${isFirst ? 1 : 0}`, { method: "POST", headers: { "x-prof-key": KEY }, body: e.data }).catch(() => {}));
   };
   relayRec.start(1000);
+  $("#soundNote").textContent = "Students who aren't in the room can listen.";
 }
-function stopRelay() {
+function stopSound() {
   if (relayRec && relayRec.state !== "inactive") relayRec.stop();
   relayRec = null;
+  stream?.getTracks().forEach((t) => t.stop()); stream = null;
   fetch("/api/audio", { method: "DELETE", headers: { "x-prof-key": KEY } });
+  $("#soundNote").textContent = "";
 }
 
-if (!KEY) document.querySelector("main").innerHTML = "<h1>Professor link needed</h1><p class='muted'>Open the professor link printed in the terminal when the server started. It has a private key at the end.</p>";
-async function onSignal({ from, data }) {
-  if (data.hello) { if (stream && pcs.has(from)) callStudent(from); return; } // student reloaded: replace the stale call
-  const pc = pcs.get(from); if (!pc || data.call !== pc.call) return;
-  if (data.sdp) {
-    await pc.setRemoteDescription(data.sdp);
-    for (const c of pc.pending.splice(0)) pc.addIceCandidate(c).catch(() => {});
-  } else if (data.candidate) {
-    if (pc.remoteDescription) pc.addIceCandidate(data.candidate).catch(() => {});
-    else pc.pending.push(data.candidate); // arrived before the answer; add it once the answer is in
-  }
-}
+if (!KEY) document.querySelector("main").innerHTML = "<h1>Professor link needed</h1><p class='note'>Open the professor link printed in the terminal when the server started. It has a private key at the end.</p>";
 
 // Check in with the server every second (works through the Cloudflare tunnel, which holds back streams).
 async function poll() {
   try {
     const r = await fetch("/api/poll?role=prof", { headers: { "x-prof-key": KEY || "" }, cache: "no-store" });
     if (r.ok) {
-      const { state: s, signals } = await r.json();
-      render(s); syncCalls(s);
-      for (const sig of signals) await onSignal(sig).catch(() => {});
+      const { state: s } = await r.json();
+      render(s);
     }
   } catch {}
   setTimeout(poll, 1000);

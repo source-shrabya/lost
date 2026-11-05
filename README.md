@@ -32,15 +32,13 @@ It uses `claude-opus-5-5` with the server-side refusal fallback turned on, so if
 
 ## Running a class
 
-1. Professor clicks Start class. The mic turns on and the transcript fills in. If the mic fails, type into the box under the transcript.
-2. Students tap I'm lost. Nothing appears to read; they get "Marked. You and 2 others. Keep listening."
-3. The counter at the bottom left turns red when 10% or more of the class tapped in the last 90 seconds.
-4. Professor clicks End class. The report groups taps that came within 45 seconds of each other into one moment, and shows what was said in the 90 seconds before.
-5. Professor reads it and clicks Send catch-up to students. Each student only gets the moments they tapped. They can answer "Still confused" or "This didn't help", and those counts show up in the report.
-
-## Live camera and mic
-
-For a demo where the student isn't in the same room, the professor clicks "Share camera + mic" and Chrome asks for permission. Each student who has joined gets the professor's video and sound at the top of their screen, sent straight from laptop to laptop over WebRTC. The Lost server only passes the connection setup messages. If the browser blocks sound, the student sees a "Tap for sound" button. Both laptops still need to be on the same Wi-Fi.
+1. Professor clicks Start class. The mic turns on, the transcript fills in, and the professor's sound is shared for students who aren't in the room. If the mic fails, type into the box under the transcript.
+2. Students tap I'm lost and keep listening. The button confirms with "Marked. You and 2 others."
+3. Students can tap Show transcript to read what has been said so far. It stays hidden until they open it.
+4. Students who aren't in the room tap Listen to class. The sound goes through the Lost server, about 2 seconds behind, so it works across any two networks.
+5. The counter at the bottom left turns gold when 10% or more of the class tapped in the last 90 seconds.
+6. Professor clicks End class. The report groups taps that came within 45 seconds of each other into one moment, and shows what was said in the 90 seconds before.
+7. Professor reads it and clicks Send summaries to students. Each student only gets the moments they tapped. They can answer "Still confused" or "This didn't help", and those counts show up in the report.
 
 ## Demo mode
 
@@ -53,7 +51,7 @@ The yellow FAKE DATA panel is for loud rooms and for testing alone. "Play sample
 | Students tap late | Each moment covers the 90 seconds before the first tap |
 | One student spams the button | One tap per student every 20 seconds counts |
 | "3 lost" means nothing without class size | The counter shows the share of the class, and alerts at 10% |
-| Reading in class makes students more lost | Nothing to read during class, the catch-up comes after |
+| Reading in class makes students more lost | The transcript stays hidden unless the student opens it, and the summary comes after class |
 | Professors won't write extra material | Claude drafts it, the professor reads and sends |
 | Professors fear the data | Students are anonymous, and student ids never reach the professor screen |
 | Wi-Fi drops | The page reconnects by itself and keeps the student's id |
