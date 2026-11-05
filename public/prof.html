@@ -31,7 +31,7 @@
   <section class="liveview">
     <div class="captions">
       <div class="captions-head">
-        <h2>Transcript</h2>
+        <h2>Transcript <span class="note" id="transcriber"></span></h2>
         <button id="mic" class="tool" disabled>Mic off</button>
       </div>
       <p class="note" id="soundNote"></p>
@@ -101,6 +101,10 @@ function render(s) {
   $("#playLecture").disabled = s.phase !== "live";
   $("#fakeTaps").disabled = s.phase !== "live";
   if (s.phase !== "live" && (listening || stream)) stopMic();
+  // Whisper finished loading during class: hand the transcript over to it. Whisper stopped: Chrome takes over.
+  if (listening && s.transcriber === "whisper" && rec) { const r = rec; rec = null; r.onend = null; r.stop(); $("#interim").textContent = ""; }
+  if (listening && s.transcriber !== "whisper" && !rec && Rec) startRec();
+  $("#transcriber").textContent = s.transcriber === "whisper" ? "Transcript by faster-whisper on this laptop" : "Transcript by Chrome speech recognition";
 
   const pct = Math.round(s.share * 100);
   $("#counter").textContent = s.lostCount ? `${s.lostCount} of ${s.joined} lost right now (${pct}%)` : "Nobody lost right now";
@@ -168,6 +172,9 @@ function startMic() {
   $("#mic").textContent = "Mic on"; $("#mic").classList.add("on"); $("#micErr").textContent = Rec ? "" : $("#micErr").textContent;
   // When the server transcribes with faster-whisper, Chrome's recognition stays off so lines aren't doubled.
   if (!Rec || state?.transcriber === "whisper") { if (Rec) $("#micErr").textContent = ""; return; }
+  startRec();
+}
+function startRec() {
   rec = new Rec(); rec.continuous = true; rec.interimResults = true; rec.lang = "en-US";
   rec.onresult = (e) => {
     let interim = "";
@@ -178,11 +185,12 @@ function startMic() {
     $("#interim").textContent = interim;
   };
   rec.onerror = (e) => { if (e.error === "not-allowed") { $("#micErr").textContent = "Mic blocked. Allow it in Chrome's address bar, or type below."; stopMic(); } };
-  rec.onend = () => { if (listening) try { rec.start(); } catch {} }; // Chrome stops after silence; restart
+  const mine = rec;
+  rec.onend = () => { if (listening && rec === mine) try { mine.start(); } catch {} }; // Chrome stops after silence; restart
   rec.start();
 }
 function stopMic() {
-  listening = false; rec?.stop(); stopSound();
+  listening = false; rec?.stop(); rec = null; stopSound();
   $("#mic").textContent = "Mic off"; $("#mic").classList.remove("on"); $("#interim").textContent = "";
 }
 

@@ -146,11 +146,14 @@ function readRaw(req, limit) {
 // One Python process loads the model once. Each time the professor starts sharing, a new ffmpeg
 // turns that WebM stream into plain 16 kHz audio and feeds it to Python. Set WHISPER=off to use
 // Chrome's built-in speech recognition instead.
-const whisper = { proc: null, ready: false, ffmpeg: null };
+const whisper = { proc: null, ready: false, ffmpeg: null, why: "" };
 function startWhisper() {
   // .venv/bin/python on Mac and Linux, .venv\Scripts\python.exe on Windows
   const py = [path.join(here, ".venv", "bin", "python"), path.join(here, ".venv", "Scripts", "python.exe")].find((f) => fs.existsSync(f)) || "";
-  if (process.env.WHISPER === "off" || !fs.existsSync(py)) return;
+  if (process.env.WHISPER === "off") { whisper.why = "turned off with WHISPER=off"; return; }
+  if (!py) { whisper.why = "no .venv folder found. Run the setup in the README (Transcript with faster-whisper)"; return; }
+  const ffCheck = spawn("ffmpeg", ["-version"]);
+  ffCheck.on("error", () => { whisper.why = "ffmpeg is not installed (Mac: brew install ffmpeg, Windows: winget install ffmpeg), then restart"; console.error(`  Transcript: Chrome speech recognition, because ${whisper.why}`); whisper.proc?.kill(); whisper.proc = null; });
   const proc = spawn(py, [path.join(here, "transcribe.py")], { stdio: ["pipe", "pipe", "pipe"], env: process.env });
   whisper.proc = proc;
   let out = "";
@@ -170,7 +173,12 @@ function startWhisper() {
   });
   proc.stderr.on("data", (d) => { if (!/HF_TOKEN|unauthenticated/.test(d)) console.error("[whisper]", String(d).trim()); });
   proc.stdin.on("error", () => {});
-  proc.on("exit", (code) => { console.error(`[whisper] stopped (code ${code}); falling back to Chrome speech recognition`); whisper.proc = null; whisper.ready = false; });
+  proc.on("error", (e) => console.error("[whisper] could not start Python:", e.message));
+  proc.on("exit", (code) => {
+    if (whisper.why) return; // already explained (ffmpeg missing)
+    console.error(`[whisper] stopped (code ${code}). Using Chrome speech recognition. If it says "No module named faster_whisper", run the pip install step in the README.`);
+    whisper.proc = null; whisper.ready = false;
+  });
 }
 function whisperNewStream(header) {
   whisperEndStream();
@@ -390,5 +398,5 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`    http://localhost:${PORT}/prof?key=${PROF_KEY}`);
   for (const ip of ips) console.log(`  Students (same Wi-Fi):               http://${ip}:${PORT}`);
   console.log(`\n  Claude explanations: ${ai ? "ON" : "OFF (set ANTHROPIC_API_KEY to turn on)"}`);
-  console.log(`  Transcript: ${whisper.proc ? "faster-whisper, loading the model…" : "Chrome speech recognition"}\n`);
+  console.log(`  Transcript: ${whisper.proc && !whisper.why ? "faster-whisper, loading the model (the first time downloads about 480 MB)…" : `Chrome speech recognition, because ${whisper.why}`}\n`);
 });
