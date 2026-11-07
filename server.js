@@ -5,6 +5,9 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
+// process.loadEnvFile (for .env) needs Node 20.12 or newer; older versions would skip .env silently.
+const [maj, min] = process.versions.node.split(".").map(Number);
+if (maj < 20 || (maj === 20 && min < 12)) { console.error(`Lost needs Node.js 20.12 or newer (this is ${process.version}). Install the LTS from nodejs.org.`); process.exit(1); }
 // Secrets such as DEEPGRAM_API_KEY live in .env (never committed). Variables set in the terminal win.
 try { process.loadEnvFile(path.join(path.dirname(fileURLToPath(import.meta.url)), ".env")); } catch {}
 import { startEngine, engine, newStream, feed, endStream, setTerms } from "./engines.js";
@@ -20,11 +23,22 @@ const ALERT_SHARE = 0.1;  // professor alert once 10% of the class is lost
 
 // After-class summaries use Claude Haiku 5.5. Two ways to reach it:
 //  - ANTHROPIC_API_KEY in .env: the Anthropic API (paid per call, a fraction of a cent per class).
-//  - LOST_AI=cli: the Claude Code command line on this laptop (`claude -p`), which runs on the
+//  - Otherwise, if Claude Code is installed, its command line (`claude -p`), which runs on the
 //    signed-in Claude subscription, so testing and demos cost nothing extra.
+// LOST_AI=api|cli|off forces one.
 const MODEL = "claude-haiku-5-5";
-const api = process.env.ANTHROPIC_API_KEY ? new Anthropic() : null;
-const ai = api ? "api" : process.env.LOST_AI === "cli" ? "cli" : null;
+// Find the claude command on PATH (claude, claude.exe or claude.cmd on Windows).
+function findClaude() {
+  const names = process.platform === "win32" ? ["claude.exe", "claude.cmd"] : ["claude"];
+  for (const dir of (process.env.PATH || "").split(path.delimiter)) {
+    for (const n of names) { const f = path.join(dir, n); if (dir && fs.existsSync(f)) return f; }
+  }
+  return null;
+}
+const claudeCmd = findClaude();
+const want = (process.env.LOST_AI || "").toLowerCase();
+const api = process.env.ANTHROPIC_API_KEY && want !== "cli" && want !== "off" ? new Anthropic() : null;
+const ai = want === "off" ? null : api ? "api" : claudeCmd && want !== "api" ? "cli" : null;
 
 // ---------- security ----------
 // The professor screen and every class-control action need this key. It is printed once in the
@@ -286,7 +300,9 @@ async function askClaude(prompt) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "lost-ai-"));
   try {
     const out = await new Promise((ok, fail) => {
-      const p = spawn("claude", ["-p", "--model", MODEL, "--output-format", "json", "--tools", ""], { cwd });
+      // a .cmd file on Windows has to go through the shell, where an empty argument must be quoted
+      const viaShell = claudeCmd.endsWith(".cmd");
+      const p = spawn(viaShell ? `"${claudeCmd}"` : claudeCmd, ["-p", "--model", MODEL, "--output-format", "json", "--tools", viaShell ? '""' : ""], { cwd, shell: viaShell });
       let o = "", e = "";
       const timer = setTimeout(() => { p.kill(); fail(new Error("claude -p took over 3 minutes")); }, 180000);
       p.stdout.on("data", (d) => (o += d)); p.stderr.on("data", (d) => (e += d));
@@ -295,7 +311,7 @@ async function askClaude(prompt) {
       p.stdin.end(prompt);
     });
     const r = JSON.parse(out);
-    if (r.is_error) throw new Error(`claude -p: ${String(r.result).slice(0, 300)}`);
+    if (r.is_error) throw new Error(`claude -p: ${String(r.result).slice(0, 300)} (if this is about signing in, run \`claude\` once in a terminal and log in)`);
     return r.result;
   } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
 }
@@ -477,7 +493,7 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`  Professor (this laptop, use Chrome, keep this link private):`);
   console.log(`    http://localhost:${PORT}/prof?key=${PROF_KEY}`);
   for (const ip of ips) console.log(`  Students (same Wi-Fi):               http://${ip}:${PORT}`);
-  console.log(`\n  Claude summaries: ${ai === "api" ? `ON (${MODEL}, Anthropic API)` : ai === "cli" ? `ON (${MODEL} through Claude Code, free)` : "OFF (set ANTHROPIC_API_KEY, or LOST_AI=cli to use Claude Code)"}`);
+  console.log(`\n  Claude summaries: ${ai === "api" ? `ON (${MODEL}, Anthropic API)` : ai === "cli" ? `ON (${MODEL} through Claude Code, free)` : "OFF (install Claude Code and sign in for free summaries, or set ANTHROPIC_API_KEY)"}`);
   console.log(`  Transcript: ${engine.name === "deepgram" ? "Deepgram Nova-3 (audio goes to Deepgram)" : engine.name !== "off" ? `${engine.name}, loading the model (the first start downloads it)…` : `Chrome speech recognition, because ${engine.why}`}`);
   console.log(`  Course terms in use: ${vocabTerms().length}\n`);
 });

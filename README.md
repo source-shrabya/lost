@@ -4,6 +4,32 @@ Students tap "I'm lost" during a lecture and keep listening. The professor sees 
 
 Built for the VOXO Hatchathon 2026.
 
+## Set up on a new laptop
+
+You need Node.js 20.12 or newer (the LTS from nodejs.org is fine) and git. Then:
+
+```
+git clone https://github.com/source-shrabya/lost.git
+cd lost
+npm install
+npm start
+```
+
+That is enough to run a class. The transcript then comes from Chrome's speech recognition, and the after-class summaries are off. Each of these adds one piece:
+
+1. Free after-class summaries: install Claude Code (claude.com/claude-code), run `claude` once in a terminal and sign in. Lost finds it on its own; the terminal says `Claude summaries: ON (claude-haiku-5-5 through Claude Code, free)`.
+2. Better transcripts: put a Deepgram key in `.env` (see Deepgram below).
+3. Reading PDF, PPTX and DOCX course files, or a transcript engine that runs on the laptop: the Python setup under "Local engines" below.
+
+To get the latest version later:
+
+```
+git pull
+npm install
+```
+
+If you did the Python setup, also run `.venv/bin/pip install -r requirements.txt` (Windows: `.venv\Scripts\pip install -r requirements.txt`).
+
 ## Run it (two laptops, same Wi-Fi)
 
 On the professor laptop:
@@ -94,14 +120,9 @@ When the professor ends class, Claude Haiku 5.5 reads the whole transcript, plus
 
 The professor reads it and presses Send. Students who are still confused after their catch-up can say so, and the count shows on the professor's report.
 
-There are two ways to turn it on:
+There are two ways to reach Claude. If `ANTHROPIC_API_KEY` is in `.env`, Lost uses the Anthropic API, which is paid per call. Otherwise, if Claude Code is installed and signed in, Lost runs `claude -p` on that sign-in, which costs nothing extra. It runs with no tools from an empty folder, so it only sees the lecture. `LOST_AI=api`, `cli` or `off` forces one.
 
-```
-LOST_AI=cli npm start                  # free: uses the Claude Code command line signed in on this laptop
-ANTHROPIC_API_KEY=sk-ant-... npm start # Anthropic API, paid per call
-```
-
-The `cli` mode runs `claude -p` with no tools from an empty folder, so it only sees the prompt. Without either, the app still works: the report shows what was said at each moment and students get the transcript instead of a summary.
+Without either, the app still works: the report shows what was said at each moment and students get the transcript instead of a summary.
 
 ## Running a class
 
