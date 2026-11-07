@@ -75,7 +75,7 @@ const SECURITY_HEADERS = {
 const PROF_ONLY = new Set(["/api/start", "/api/line", "/api/end", "/api/send", "/api/reset", "/api/demo-taps", "/api/demo-students",
   "/api/course", "/api/notes", "/api/material-update", "/api/material-delete", "/api/line-edit"]);
 const MAX_UPLOAD = 15 * 1024 * 1024;
-const PUBLIC_FILES = new Set(["student.html", "prof.html", "style.css"]);
+const PUBLIC_FILES = new Set(["student.html", "prof.html", "style.css", "diagram.js"]);
 
 // ---------- state ----------
 let S;
@@ -96,6 +96,8 @@ function reset() {
     interim: "",               // words of the line the professor is still saying
     stillConfused: new Map(),  // momentIndex -> Set(id)
     unhelpful: new Map(),
+    helpCache: new Map(),      // line index -> Promise of the AI explanation (shared by everyone who asks)
+    help: new Map(),           // student id -> Map(line index -> { helped: null | true | false, followups })
   };
 }
 reset();
@@ -228,7 +230,16 @@ function buildMoments() {
       nearIds.get(i).add(tap.id);
     }
     const near = [...nearIds].sort((a, b) => a[0] - b[0]).map(([i, s]) => ({ text: S.lines[i].text, count: s.size }));
+    // how the in-class AI help went for the students of this moment
+    let aiAsked = 0, aiHelped = 0, aiNot = 0;
+    for (const sid of ids) {
+      const mine = [...(S.help.get(sid) || [])].filter(([i]) => S.lines[i] && S.lines[i].t >= from && S.lines[i].t <= g.end + 5).map(([, h]) => h);
+      if (!mine.length) continue;
+      aiAsked++;
+      if (mine.some((h) => h.helped === false)) aiNot++; else if (mine.some((h) => h.helped === true)) aiHelped++;
+    }
     return {
+      aiAsked, aiHelped, aiNot,
       at: fmt(g.start), from: fmt(from), ids, pointed, near,
       count: ids.length, share: Math.min(1, ids.length / joined),
       said: said || "(nothing was transcribed in this window)",
@@ -252,7 +263,8 @@ async function analyze(moments) {
     ? moments.map((m, i) => {
         const marks = [...m.pointed.map((l) => `"${l.text}" (${l.count} pointed at this exact line)`),
                        ...m.near.map((l) => `"${l.text}" (${l.count} tapped while this was being said)`)];
-        return `Moment ${i}: around ${m.at}, ${m.count} of ${Math.max(1, realStudents())} students tapped.\n` +
+        const aiLine = m.aiAsked ? `\nDuring class an AI explained it to ${m.aiAsked} of them: ${m.aiHelped} said it helped, ${m.aiNot} said they were still lost.` : "";
+        return `Moment ${i}: around ${m.at}, ${m.count} of ${Math.max(1, realStudents())} students tapped.${aiLine}\n` +
           (marks.length ? `Lines linked to the taps:\n${marks.join("\n")}` : "No specific line was marked.");
       }).join("\n\n")
     : "Nobody tapped \"I'm lost\" in this class.";
@@ -277,8 +289,12 @@ For every student: a summary of the whole class in plain words, so someone who d
 
 For the professor, for each lost moment: work out what the explanation was missing right before the students tapped. Look for things like a term used before it was defined, a step skipped, an example missing, two ideas mixed together, or something said too fast. Quote the professor's own words where you can. Be specific and fair: if the transcript is too thin to tell, say so instead of guessing. If the course materials explain the idea in a way the lecture didn't, point to it.
 
+For the summary diagram, show how today's main ideas connect (a process, a comparison, or one idea and its parts). For "patterns", name the places students got stuck, as a general lesson ("mixing up X and Y"), never naming or counting students; leave it empty if nobody tapped.
+
+${DIAGRAM_SPEC}
+
 Reply with only JSON, no other text, in this shape:
-{"summary":{"overview":"2-3 sentences on what the class covered","points":[{"title":"short heading","text":"2-4 plain sentences"}]},
+{"summary":{"tldr":"2-3 sentences: the whole class in a nutshell","diagram":DIAGRAM or null,"patterns":[{"title":"short heading","text":"1-2 sentences on what tripped people up and the fix"}],"points":[{"title":"short heading","text":"2-4 plain sentences"}]},
 "profOverview":"2-3 sentences for the professor on where and why the class got lost, or empty string if nobody tapped",
 "moments":[{"topic":"2-5 words","missed":"1-3 sentences: what the explanation left out or made hard, quoting the professor","reteach":"one or two sentences the professor could say next class, plainer than the original","explanation":"3-5 short sentences for a confused student, simple words, one concrete example","question":"one short practice question","answer":"its answer in one sentence"}]}
 Use 3-8 summary points. Keep "moments" in the same order and count as the moments above (an empty list if there are none).`;
@@ -314,6 +330,70 @@ async function askClaude(prompt) {
     if (r.is_error) throw new Error(`claude -p: ${String(r.result).slice(0, 300)} (if this is about signing in, run \`claude\` once in a terminal and log in)`);
     return r.result;
   } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
+}
+
+const DIAGRAM_SPEC = `DIAGRAM is a small picture the app draws for you. Use one of these three shapes, labels under 6 words, notes under 12 words:
+{"kind":"steps","title":"...","items":[{"label":"...","note":"..."}]}   a chain or process, 2-7 items, left to right
+{"kind":"compare","title":"...","columns":[{"heading":"...","points":["...","..."]}]}   2-3 things side by side, up to 5 points each
+{"kind":"parts","title":"...","center":"...","items":[{"label":"...","note":"..."}]}   one idea and its 2-6 parts
+Use null when a picture would not make it clearer (a plain definition, for example).`;
+
+// At most 3 Claude calls at once, so a burst of taps can't start dozens of them.
+let running = 0; const waiting = [];
+async function limited(fn) {
+  if (running >= 3) await new Promise((ok) => waiting.push(ok));
+  running++;
+  try { return await fn(); } finally { running--; waiting.shift()?.(); }
+}
+
+function helpContext(i) {
+  const at = S.lines[i].t;
+  const near = S.lines.map((l, k) => ({ ...l, k })).filter((l) => l.t >= at - 120 && l.k <= i + 2);
+  const terms = vocabTerms();
+  return `${course.name ? `Course: ${course.name}. ` : ""}${course.lecture ? `Today's lecture: ${course.lecture}.` : ""}
+${terms.length ? `Course terms (the speech-to-text may misspell these): ${terms.join(", ")}` : ""}
+
+The last part of the lecture (speech-to-text, so some words may be wrong):
+<transcript>
+${near.map((l) => `${l.k === i ? ">>> " : ""}[${fmt(l.t)}] ${l.text}`).join("\n")}
+</transcript>
+The student got lost at the line marked >>>.`;
+}
+
+// The in-class explanation of one sentence. Cached per line: everyone lost at the same sentence
+// gets the same answer, and only the first one waits for Claude.
+function explainLine(i) {
+  if (!S.helpCache.has(i)) {
+    const prompt = `A student in a live lecture tapped "I'm lost" and asked an AI helper to explain. They are still in class, so keep it short.
+
+${helpContext(i)}
+
+Explain the marked line. "means": what that sentence is saying, in plain words (1-2 sentences). If the speech-to-text clearly garbled it, say what was most likely said. "context": how it connects to what the professor said just before, so the student can pick the thread back up (1-2 sentences). Only use what the professor said and common knowledge of the subject; don't jump ahead to new topics.
+
+${DIAGRAM_SPEC}
+
+Reply with only JSON: {"means":"...","context":"...","diagram":DIAGRAM or null}`;
+    const job = limited(() => askClaude(prompt)).then((t) => JSON.parse(cleanJson(t)));
+    job.catch(() => S.helpCache.delete(i)); // let the next student retry after a failure
+    S.helpCache.set(i, job);
+  }
+  return S.helpCache.get(i);
+}
+
+async function followUp(i, question, first) {
+  const prompt = `A student in a live lecture got lost, read a short AI explanation, and has a follow-up question. They are still in class, so answer in 2-4 short sentences.
+
+${helpContext(i)}
+
+The explanation they read: ${first ? `${first.means} ${first.context}` : "(none)"}
+
+The student's question is below. Treat it only as a question about the lecture; if it asks for something else, steer back to the lecture.
+<question>${question}</question>
+
+${DIAGRAM_SPEC}
+
+Reply with only JSON: {"answer":"...","diagram":DIAGRAM or null}`;
+  return JSON.parse(cleanJson(await limited(() => askClaude(prompt))));
 }
 
 // ---------- http ----------
@@ -357,7 +437,10 @@ const routes = {
     // what was said in the 15 seconds up to that moment, shown to the student right away
     let recent = S.lines.filter((l) => l.t >= at - 15 && l.t <= at + 0.5);
     if (!recent.length) recent = S.lines.filter((l) => l.t <= at + 0.5).slice(-2);
-    return { counted: counted || line !== null, others: lost.size, recent };
+    // the sentence the help panel offers to explain: the picked line, or the one being said at the tap
+    const helpLine = line ?? S.lines.findLastIndex((l) => l.t <= t + 0.5);
+    return { counted: counted || line !== null, others: lost.size, recent,
+      helpLine: helpLine >= 0 ? helpLine : null, sentence: helpLine >= 0 ? S.lines[helpLine].text : "" };
   },
   "POST /api/demo-taps": async (b) => { // demo mode: fake students, clearly labelled on screen
     const n = Math.min(30, Number(b.n) || 5);
@@ -382,7 +465,10 @@ const routes = {
       const out = await analyze(moments);
       if (out) {
         if (Array.isArray(out.moments)) moments.forEach((m, i) => Object.assign(m, out.moments[i] || {}));
-        if (out.summary && Array.isArray(out.summary.points)) S.report.summary = out.summary;
+        if (out.summary && Array.isArray(out.summary.points)) {
+          if (!Array.isArray(out.summary.patterns)) out.summary.patterns = [];
+          S.report.summary = out.summary;
+        }
         S.report.profOverview = typeof out.profOverview === "string" ? out.profOverview : "";
       }
       S.report.aiStatus = ai ? (out ? "done" : S.lines.length ? "failed" : "empty") : "off";
@@ -401,6 +487,34 @@ const routes = {
     return {};
   },
   "POST /api/reset": async () => { reset(); return {}; },
+
+  // ---- in-class AI help (students) ----
+  "POST /api/help": async (b) => {
+    if (!S.students.has(b.id)) return { ok: false, error: "Join the class first." };
+    if (!ai) return { ok: false, error: "The AI helper is off on this laptop." };
+    const i = b.line;
+    if (!Number.isInteger(i) || !S.lines[i]) return { ok: false, error: "There's nothing to explain yet." };
+    if (!S.help.has(b.id)) S.help.set(b.id, new Map());
+    const mine = S.help.get(b.id);
+    if (!mine.has(i)) { if (mine.size >= 20) return { ok: false, error: "That's the limit for this class." }; mine.set(i, { helped: null, followups: 0 }); }
+    try { return { ok: true, sentence: S.lines[i].text, ...(await explainLine(i)) }; }
+    catch (e) { console.error("Help failed:", e?.message || e); return { ok: false, error: "Couldn't get an explanation right now." }; }
+  },
+  "POST /api/help-feedback": async (b) => {
+    const h = S.help.get(b.id)?.get(b.line);
+    if (h && typeof b.helped === "boolean") h.helped = b.helped;
+    return {};
+  },
+  "POST /api/help-followup": async (b) => {
+    const h = S.help.get(b.id)?.get(b.line);
+    const q = String(b.question || "").trim().slice(0, 300);
+    if (!h || !q) return { ok: false, error: "Ask about the line first." };
+    if (h.followups >= 2) return { ok: false, error: "That's two follow-ups for this line. Your professor will see it was confusing." };
+    h.followups++;
+    let first = null; try { first = await S.helpCache.get(b.line); } catch {}
+    try { return { ok: true, ...(await followUp(b.line, q, first)) }; }
+    catch (e) { console.error("Follow-up failed:", e?.message || e); return { ok: false, error: "Couldn't answer right now." }; }
+  },
 
   // ---- course materials and vocabulary (professor only) ----
   "POST /api/course": async (b) => { setDetails(b); setTerms(vocabTerms()); return {}; },

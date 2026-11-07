@@ -40,6 +40,10 @@
     </div>
 
     <div class="side-col">
+      <aside id="help" class="side-card help" hidden aria-live="polite">
+        <div class="side-head"><h2>Lost helper</h2><button id="closeHelp" class="quiet">Close</button></div>
+        <div id="helpBody" class="help-body"></div>
+      </aside>
       <div id="recent" class="side-card" hidden>
         <div class="side-head"><h2 id="recentTitle">The last 15 seconds</h2><button id="closeRecent" class="quiet">Close</button></div>
         <div id="recentLines" class="tlines"></div>
@@ -59,6 +63,7 @@
     <div id="catchups"></div>
   </section>
 </main>
+<script src="diagram.js"></script>
 <script>
 let id = null;
 try { id = localStorage.getItem("lost-id"); } catch {}
@@ -107,7 +112,8 @@ $("#lost").onclick = async () => {
   setSel(null);
   navigator.vibrate?.(40);
   if (!r.counted && r.reason) { flashAck(r.reason); return; }
-  if (r.recent) showRecent(r.recent, pointed);
+  if (r.helpLine != null) { $("#recent").hidden = true; openHelp(r.helpLine, r.sentence); }
+  else if (r.recent) showRecent(r.recent, pointed);
   const others = r.others;
   // The button itself confirms the tap for a few seconds, then goes back to normal.
   const b = $("#lost"); b.classList.add("marked");
@@ -120,6 +126,61 @@ $("#lost").onclick = async () => {
     b.querySelector(".lost-sub").textContent = DEFAULT_SUB;
   }, 5000);
 };
+
+// ---------- the helper that pops up after a tap ----------
+// The tap has already reached the professor. The helper only offers an explanation on top.
+let helpLine = null, helpSentence = "";
+const quote = () => `<blockquote class="help-quote">"${esc(helpSentence)}"</blockquote>`;
+function setHelp(html) {
+  $("#helpBody").innerHTML = html;
+  $("#help").hidden = false;
+  if (window.innerWidth < 900) $("#help").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+function openHelp(i, sentence) {
+  helpLine = i; helpSentence = sentence;
+  setHelp(`<p class="help-ask">Do you need my help with this?</p>${quote()}
+    <div class="help-actions"><button class="primary" data-h="explain">Explain it</button><button data-h="prof">Just tell my professor</button></div>`);
+}
+async function explainIt() {
+  setHelp(`${quote()}<p class="note help-wait">Reading what your professor just said…</p>`);
+  const line = helpLine;
+  const r = await post("/api/help", { line }).catch(() => ({ ok: false, error: "No connection." }));
+  if (line !== helpLine) return; // the student tapped somewhere else meanwhile
+  if (!r.ok) { setHelp(`${quote()}<p class="note">${esc(r.error)} Your professor still got your tap.</p>`); return; }
+  setHelp(`${quote()}
+    <h3 class="help-h">What it means</h3><p>${esc(r.means)}</p>
+    <h3 class="help-h">How it fits</h3><p>${esc(r.context)}</p>
+    ${window.drawDiagram(r.diagram)}
+    <div id="helpVote"><p class="help-ask">Did that help?</p>
+      <div class="help-actions"><button data-h="yes">Yes</button><button data-h="no">No, still lost</button></div></div>
+    <form id="helpAsk" class="help-form" hidden><label for="helpQ" class="note">Ask a follow-up</label>
+      <div class="help-row"><input id="helpQ" maxlength="300" autocomplete="off" placeholder="What does … mean?"><button class="primary">Ask</button></div></form>
+    <div id="helpMore"></div>`);
+}
+$("#helpBody").onclick = async (e) => {
+  const b = e.target.closest("button[data-h]"); if (!b) return;
+  const h = b.dataset.h;
+  if (h === "explain") explainIt();
+  if (h === "prof") { setHelp(`<p>Sent. Your professor sees this spot, and your summary after class will cover it.</p>`); setTimeout(() => ($("#help").hidden = true), 4000); }
+  if (h === "yes" || h === "no") {
+    post("/api/help-feedback", { line: helpLine, helped: h === "yes" });
+    $("#helpVote").innerHTML = `<p class="note">${h === "yes" ? "Good. Your professor will see that it helped." : "Got it. Your professor will see this spot is still unclear."}</p>`;
+    $("#helpAsk").hidden = false;
+  }
+};
+$("#helpBody").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const q = $("#helpQ").value.trim(); if (!q) return;
+  const more = $("#helpMore"), btn = e.target.querySelector("button");
+  btn.disabled = true;
+  more.insertAdjacentHTML("beforeend", `<p class="help-q">${esc(q)}</p><p class="note help-wait">Thinking…</p>`);
+  $("#helpQ").value = "";
+  const r = await post("/api/help-followup", { line: helpLine, question: q }).catch(() => ({ ok: false, error: "No connection." }));
+  more.querySelector(".help-wait")?.remove();
+  more.insertAdjacentHTML("beforeend", r.ok ? `<p>${esc(r.answer)}</p>${window.drawDiagram(r.diagram)}` : `<p class="note">${esc(r.error)}</p>`);
+  btn.disabled = false;
+});
+$("#closeHelp").onclick = () => ($("#help").hidden = true);
 
 $("#showT").onclick = () => {
   transcriptOpen = !transcriptOpen;
@@ -166,7 +227,10 @@ function render(s) {
     if (key !== lastSum) {
       lastSum = key;
       $("#classSum").innerHTML = s.summary
-        ? `<p class="lede">${esc(s.summary.overview || "")}</p>` + s.summary.points.map((p) => `<article class="sumpoint"><h3>${esc(p.title)}</h3><p>${esc(p.text)}</p></article>`).join("")
+        ? `<div class="tldr"><span>TL;DR</span><p>${esc(s.summary.tldr || s.summary.overview || "")}</p></div>` +
+          window.drawDiagram(s.summary.diagram) +
+          (s.summary.patterns?.length ? `<h2 class="after-h">Where the class got stuck</h2>` + s.summary.patterns.map((p) => `<article class="sumpoint"><h3>${esc(p.title)}</h3><p>${esc(p.text)}</p></article>`).join("") : "") +
+          `<h2 class="after-h">Topic by topic</h2>` + s.summary.points.map((p) => `<article class="sumpoint"><h3>${esc(p.title)}</h3><p>${esc(p.text)}</p></article>`).join("")
         : `<details class="tdump"><summary>Everything your professor said (transcript)</summary>${s.transcript.map((l) => `<p><time>${fmt(l.t)}</time>${esc(l.text)}</p>`).join("") || "<p class='note'>Nothing was transcribed.</p>"}</details>`;
     }
   }

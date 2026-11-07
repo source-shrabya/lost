@@ -101,6 +101,7 @@
 
 <div class="counter" id="counter" role="status">Nobody lost right now</div>
 
+<script src="diagram.js"></script>
 <script>
 const $ = (s) => document.querySelector(s);
 // The professor key comes from the private link printed in the terminal. Keep it out of the address bar after reading it.
@@ -185,8 +186,10 @@ function renderReport(r) {
   $("#profOverview").hidden = !r.profOverview;
   $("#profOverview").textContent = r.profOverview || "";
   $("#sumBox").hidden = !r.summary;
-  $("#sumBody").innerHTML = r.summary ? `<p>${esc(r.summary.overview || "")}</p>` +
-    r.summary.points.map((p) => `<h4>${esc(p.title)}</h4><p>${esc(p.text)}</p>`).join("") : "";
+  $("#sumBody").innerHTML = r.summary ? `<div class="tldr"><span>TL;DR</span><p>${esc(r.summary.tldr || r.summary.overview || "")}</p></div>` +
+    window.drawDiagram(r.summary.diagram) +
+    (r.summary.patterns?.length ? `<h4>Where the class got stuck</h4>` + r.summary.patterns.map((p) => `<p><b>${esc(p.title)}.</b> ${esc(p.text)}</p>`).join("") : "") +
+    `<h4>Topic by topic</h4>` + r.summary.points.map((p) => `<p><b>${esc(p.title)}.</b> ${esc(p.text)}</p>`).join("") : "";
   $("#moments").innerHTML = r.moments.length ? r.moments.map((m) => `
     <article class="moment">
       <div class="moment-head">
@@ -197,6 +200,7 @@ function renderReport(r) {
       ${m.pointed?.length ? `<div class="pointed"><span>Students pointed at</span>${m.pointed.map((l) => `<p>"${esc(l.text)}" <b>${l.count} student${l.count === 1 ? "" : "s"}</b></p>`).join("")}</div>` : ""}
       ${m.near?.length ? `<div class="pointed"><span>You were saying this when they tapped</span>${m.near.map((l) => `<p>"${esc(l.text)}" <b>${l.count} student${l.count === 1 ? "" : "s"}</b></p>`).join("")}</div>` : ""}
       <details${m.pointed?.length || m.near?.length ? "" : " open"}><summary>Everything you said in the 90 seconds before</summary><blockquote class="said">${esc(m.said)}</blockquote></details>
+      ${m.aiAsked ? `<p class="loop${m.aiNot ? " warn" : ""}">During class the AI explained it to ${m.aiAsked}: ${m.aiHelped} said it helped, ${m.aiNot} still lost${m.aiAsked - m.aiHelped - m.aiNot ? `, ${m.aiAsked - m.aiHelped - m.aiNot} didn't say` : ""}.</p>` : ""}
       ${m.missed ? `<p class="missed"><span>What the explanation missed</span>${esc(m.missed)}</p>` : ""}
       ${m.reteach ? `<p class="reteach"><span>Try next class</span>${esc(m.reteach)}</p>` : ""}
       ${m.explanation ? `<details><summary>What students will get</summary><p>${esc(m.explanation)}</p><p><em>${esc(m.question)}</em> ${esc(m.answer)}</p></details>` : ""}
