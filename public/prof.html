@@ -55,7 +55,12 @@
       <button class="primary" id="send">Send summaries to students</button>
     </div>
     <p class="note" id="aiNote"></p>
+    <p class="overview" id="profOverview" hidden></p>
     <div id="moments"></div>
+    <details class="class-summary" id="sumBox" hidden>
+      <summary>Class summary every student gets</summary>
+      <div id="sumBody"></div>
+    </details>
   </section>
 
   <details id="materials" class="materials">
@@ -167,13 +172,19 @@ function renderReport(r) {
   const key = JSON.stringify(r);
   if (key === lastReport) return; lastReport = key;
   $("#aiNote").textContent = {
-    off: "Claude is off (no API key), so the report shows only what you said at each moment.",
-    working: "Claude is writing explanations…",
-    failed: "Claude didn't answer, so the report shows only what you said at each moment.",
-    done: "Explanations drafted by Claude. Read them before you send.",
+    off: "Claude is off (no API key), so the report shows only what you said at each moment, and students get the transcript instead of a summary.",
+    working: "Claude is reading the lecture and writing the summaries…",
+    failed: "Claude didn't answer, so the report shows only what you said at each moment, and students get the transcript instead of a summary.",
+    empty: "Nothing was transcribed, so there is nothing to summarize.",
+    done: "Drafted by Claude from the transcript. Read it before you send.",
   }[r.aiStatus];
-  $("#send").disabled = r.sent || r.aiStatus === "working" || !r.moments.length;
+  $("#send").disabled = r.sent || r.aiStatus === "working";
   $("#send").textContent = r.sent ? "Sent to students" : "Send summaries to students";
+  $("#profOverview").hidden = !r.profOverview;
+  $("#profOverview").textContent = r.profOverview || "";
+  $("#sumBox").hidden = !r.summary;
+  $("#sumBody").innerHTML = r.summary ? `<p>${esc(r.summary.overview || "")}</p>` +
+    r.summary.points.map((p) => `<h4>${esc(p.title)}</h4><p>${esc(p.text)}</p>`).join("") : "";
   $("#moments").innerHTML = r.moments.length ? r.moments.map((m) => `
     <article class="moment">
       <div class="moment-head">
@@ -184,9 +195,10 @@ function renderReport(r) {
       ${m.pointed?.length ? `<div class="pointed"><span>Students pointed at</span>${m.pointed.map((l) => `<p>"${esc(l.text)}" <b>${l.count} student${l.count === 1 ? "" : "s"}</b></p>`).join("")}</div>` : ""}
       ${m.near?.length ? `<div class="pointed"><span>You were saying this when they tapped</span>${m.near.map((l) => `<p>"${esc(l.text)}" <b>${l.count} student${l.count === 1 ? "" : "s"}</b></p>`).join("")}</div>` : ""}
       <details${m.pointed?.length || m.near?.length ? "" : " open"}><summary>Everything you said in the 90 seconds before</summary><blockquote class="said">${esc(m.said)}</blockquote></details>
+      ${m.missed ? `<p class="missed"><span>What the explanation missed</span>${esc(m.missed)}</p>` : ""}
       ${m.reteach ? `<p class="reteach"><span>Try next class</span>${esc(m.reteach)}</p>` : ""}
       ${m.explanation ? `<details><summary>What students will get</summary><p>${esc(m.explanation)}</p><p><em>${esc(m.question)}</em> ${esc(m.answer)}</p></details>` : ""}
-      ${r.sent ? `<p class="note">${m.stillConfused} still confused. ${m.unhelpful} said the catch-up didn't help.</p>` : ""}
+      ${r.sent ? `<p class="loop${m.stillConfused || m.unhelpful ? " warn" : ""}">After the catch-up: ${m.stillConfused} still confused, ${m.unhelpful} said it didn't help.</p>` : ""}
     </article>`).join("") : `<p class="empty">Nobody tapped during this class.</p>`;
 }
 

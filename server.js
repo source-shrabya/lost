@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 // Secrets such as DEEPGRAM_API_KEY live in .env (never committed). Variables set in the terminal win.
 try { process.loadEnvFile(path.join(path.dirname(fileURLToPath(import.meta.url)), ".env")); } catch {}
 import { startEngine, engine, newStream, feed, endStream, setTerms } from "./engines.js";
-import { loadCourse, course, setDetails, addMaterial, addNotes, updateMaterial, deleteMaterial, vocabTerms } from "./course.js";
+import { loadCourse, course, setDetails, addMaterial, addNotes, updateMaterial, deleteMaterial, vocabTerms, lectureMaterials } from "./course.js";
 import Anthropic from "@anthropic-ai/sdk";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -18,12 +18,19 @@ const TAP_COOLDOWN = 20;  // one student counts once per 20 s, so spamming can't
 const CLUSTER_GAP = 45;   // taps closer than this belong to the same "lost moment"
 const ALERT_SHARE = 0.1;  // professor alert once 10% of the class is lost
 
-const ai = process.env.ANTHROPIC_API_KEY ? new Anthropic() : null;
+// After-class summaries use Claude Haiku 5.5. Two ways to reach it:
+//  - ANTHROPIC_API_KEY in .env: the Anthropic API (paid per call, a fraction of a cent per class).
+//  - LOST_AI=cli: the Claude Code command line on this laptop (`claude -p`), which runs on the
+//    signed-in Claude subscription, so testing and demos cost nothing extra.
+const MODEL = "claude-haiku-5-5";
+const api = process.env.ANTHROPIC_API_KEY ? new Anthropic() : null;
+const ai = api ? "api" : process.env.LOST_AI === "cli" ? "cli" : null;
 
 // ---------- security ----------
 // The professor screen and every class-control action need this key. It is printed once in the
 // terminal and never sent to students, so someone with the public student link can't control the class.
 import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 const PROF_KEY = process.env.PROF_KEY || crypto.randomBytes(16).toString("hex");
 const isProf = (req, url) => {
   const given = req.headers["x-prof-key"] || url.searchParams.get("key") || "";
@@ -134,7 +141,10 @@ function studentView(id, wantLines) {
   return {
     phase: S.phase, code: S.code,
     joined: S.students.has(id),
-    catchup: mine && mine.map(({ ids, ...m }) => m),
+    catchup: mine && mine.map(({ ids, missed, reteach, ...m }) => m), // the professor's notes stay with the professor
+    summary: S.report?.sent ? S.report.summary : null,
+    // without Claude there is no written summary, so students get the transcript instead
+    transcript: S.report?.sent && !S.report.summary ? S.lines.map((l) => ({ t: l.t, text: l.text })) : null,
     sent: !!S.report?.sent,
     // live transcript, only while the student has it open
     lines: wantLines && S.phase === "live" ? linesFrom(S.lines.length - 60, id) : null,
@@ -212,30 +222,82 @@ function buildMoments() {
   });
 }
 
-async function explain(moments) {
-  if (!ai || moments.length === 0) return null;
-  const prompt =
-`You help a professor and their students after a lecture. Students tapped "I'm lost" at these moments.
-For each moment you get the lecture transcript from about 90 seconds before the taps (speech-to-text, may have errors).
+// One Claude call after class. It reads the whole transcript (plus the course files ticked for this
+// lecture) and writes three things: a class summary every student gets, a short "where the class got
+// lost" overview for the professor, and for each lost moment what the explanation left out, how to
+// re-teach it, and a catch-up for the students who tapped.
+async function analyze(moments) {
+  if (!ai || S.lines.length === 0) return null;
+  const transcript = S.lines.map((l) => `[${fmt(l.t)}] ${l.text}`).join("\n");
+  const mats = lectureMaterials();
+  const matBlock = mats.files.length
+    ? `Course materials the professor uploaded for this lecture${mats.cut ? " (cut short, they were very long)" : ""}:\n` +
+      mats.files.map((f) => `<file name="${f.name}">\n${f.text}\n</file>`).join("\n")
+    : "No course materials were uploaded.";
+  const momentBlock = moments.length
+    ? moments.map((m, i) => {
+        const marks = [...m.pointed.map((l) => `"${l.text}" (${l.count} pointed at this exact line)`),
+                       ...m.near.map((l) => `"${l.text}" (${l.count} tapped while this was being said)`)];
+        return `Moment ${i}: around ${m.at}, ${m.count} of ${Math.max(1, realStudents())} students tapped.\n` +
+          (marks.length ? `Lines linked to the taps:\n${marks.join("\n")}` : "No specific line was marked.");
+      }).join("\n\n")
+    : "Nobody tapped \"I'm lost\" in this class.";
 
-${moments.map((m, i) => `Moment ${i} (around ${m.at}, ${m.count} student(s)):\n"""${m.said}"""`).join("\n\n")}
+  const prompt =
+`You help a professor and their students after a lecture. During class, students tapped "I'm lost" in an app.
+${course.name ? `Course: ${course.name}. ` : ""}${course.lecture ? `Today's lecture: ${course.lecture}.` : ""}
+
+Lecture transcript (speech-to-text, so some words may be wrong; [m:ss] is time since class started):
+<transcript>
+${transcript}
+</transcript>
+
+${matBlock}
+
+Moments when students got lost:
+${momentBlock}
+
+Write for two readers.
+
+For every student: a summary of the whole class in plain words, so someone who drifted off can catch up. Follow the order the professor taught. Stick to what was said; you may use the course materials to fix speech-to-text mistakes in terms, but don't add topics the professor didn't cover.
+
+For the professor, for each lost moment: work out what the explanation was missing right before the students tapped. Look for things like a term used before it was defined, a step skipped, an example missing, two ideas mixed together, or something said too fast. Quote the professor's own words where you can. Be specific and fair: if the transcript is too thin to tell, say so instead of guessing. If the course materials explain the idea in a way the lecture didn't, point to it.
 
 Reply with only JSON, no other text, in this shape:
-{"moments":[{"topic":"2-5 words","reteach":"one or two sentences the professor could say next class to re-explain it, plainer than the original","explanation":"3-5 short sentences for a confused student, simple words, one concrete example","question":"one short practice question","answer":"its answer in one sentence"}]}
-Keep the same order and count as the moments above.`;
-  const base = { model: "claude-opus-5-5", max_tokens: 8000, output_config: { effort: "low" }, messages: [{ role: "user", content: prompt }] };
-  let res;
-  try {
-    // Server-side fallback: if Opus 5.5 declines, the API retries on another model inside the same call.
-    res = await ai.beta.messages.create({ ...base, betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" });
-  } catch (e) {
-    if (e?.status !== 400) throw e;
-    res = await ai.messages.create(base);
+{"summary":{"overview":"2-3 sentences on what the class covered","points":[{"title":"short heading","text":"2-4 plain sentences"}]},
+"profOverview":"2-3 sentences for the professor on where and why the class got lost, or empty string if nobody tapped",
+"moments":[{"topic":"2-5 words","missed":"1-3 sentences: what the explanation left out or made hard, quoting the professor","reteach":"one or two sentences the professor could say next class, plainer than the original","explanation":"3-5 short sentences for a confused student, simple words, one concrete example","question":"one short practice question","answer":"its answer in one sentence"}]}
+Use 3-8 summary points. Keep "moments" in the same order and count as the moments above (an empty list if there are none).`;
+  return JSON.parse(cleanJson(await askClaude(prompt)));
+}
+const cleanJson = (text) => text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1);
+
+async function askClaude(prompt) {
+  if (ai === "api") {
+    const res = await api.messages.create({
+      model: MODEL, max_tokens: 16000, output_config: { effort: "medium" },
+      messages: [{ role: "user", content: prompt }],
+    });
+    if (res.stop_reason === "refusal") throw new Error("Claude declined");
+    if (res.stop_reason === "max_tokens") throw new Error("Claude's answer was cut off");
+    return res.content.filter((b) => b.type === "text").map((b) => b.text).join("");
   }
-  if (res.stop_reason === "refusal") return null;
-  const text = res.content.filter((b) => b.type === "text").map((b) => b.text).join("");
-  const json = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
-  return json.moments;
+  // Claude Code in print mode, no tools, run from an empty folder so it reads nothing on this laptop.
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "lost-ai-"));
+  try {
+    const out = await new Promise((ok, fail) => {
+      const p = spawn("claude", ["-p", "--model", MODEL, "--output-format", "json", "--tools", ""], { cwd });
+      let o = "", e = "";
+      const timer = setTimeout(() => { p.kill(); fail(new Error("claude -p took over 3 minutes")); }, 180000);
+      p.stdout.on("data", (d) => (o += d)); p.stderr.on("data", (d) => (e += d));
+      p.on("error", (err) => { clearTimeout(timer); fail(err); });
+      p.on("close", (code) => { clearTimeout(timer); code === 0 ? ok(o) : fail(new Error(`claude -p exited ${code}: ${e.slice(0, 300)}`)); });
+      p.stdin.end(prompt);
+    });
+    const r = JSON.parse(out);
+    if (r.is_error) throw new Error(`claude -p: ${String(r.result).slice(0, 300)}`);
+    return r.result;
+  } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
 }
 
 // ---------- http ----------
@@ -299,11 +361,15 @@ const routes = {
     if (S.phase !== "live") return {};
     S.phase = "ended";
     const moments = buildMoments();
-    S.report = { moments, ai: !!ai, aiStatus: ai ? "working" : "off", sent: false };
+    S.report = { moments, ai: !!ai, aiStatus: ai ? "working" : "off", sent: false, summary: null, profOverview: "" };
     try {
-      const extra = await explain(moments);
-      if (extra) moments.forEach((m, i) => Object.assign(m, extra[i] || {}));
-      S.report.aiStatus = ai ? (extra ? "done" : "failed") : "off";
+      const out = await analyze(moments);
+      if (out) {
+        if (Array.isArray(out.moments)) moments.forEach((m, i) => Object.assign(m, out.moments[i] || {}));
+        if (out.summary && Array.isArray(out.summary.points)) S.report.summary = out.summary;
+        S.report.profOverview = typeof out.profOverview === "string" ? out.profOverview : "";
+      }
+      S.report.aiStatus = ai ? (out ? "done" : S.lines.length ? "failed" : "empty") : "off";
     } catch (e) {
       console.error("Claude call failed:", e?.message || e);
       S.report.aiStatus = "failed";
@@ -411,7 +477,7 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`  Professor (this laptop, use Chrome, keep this link private):`);
   console.log(`    http://localhost:${PORT}/prof?key=${PROF_KEY}`);
   for (const ip of ips) console.log(`  Students (same Wi-Fi):               http://${ip}:${PORT}`);
-  console.log(`\n  Claude explanations: ${ai ? "ON" : "OFF (set ANTHROPIC_API_KEY to turn on)"}`);
+  console.log(`\n  Claude summaries: ${ai === "api" ? `ON (${MODEL}, Anthropic API)` : ai === "cli" ? `ON (${MODEL} through Claude Code, free)` : "OFF (set ANTHROPIC_API_KEY, or LOST_AI=cli to use Claude Code)"}`);
   console.log(`  Transcript: ${engine.name === "deepgram" ? "Deepgram Nova-3 (audio goes to Deepgram)" : engine.name !== "off" ? `${engine.name}, loading the model (the first start downloads it)…` : `Chrome speech recognition, because ${engine.why}`}`);
   console.log(`  Course terms in use: ${vocabTerms().length}\n`);
 });

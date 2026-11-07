@@ -107,3 +107,19 @@ function extract(filePath, kind) {
     });
   });
 }
+
+// Text of the files ticked "Use for this lecture", for the after-class analysis.
+// Capped so one huge textbook can't blow up the request; `cut` says when that happened.
+export function lectureMaterials(maxChars = 200000) {
+  let total = 0, cut = false;
+  const files = [];
+  for (const m of course.materials.filter((x) => x.use)) {
+    let text = "";
+    try { text = fs.readFileSync(path.join(matDir, `${m.id}.txt`), "utf8"); } catch { continue; }
+    if (total + text.length > maxChars) { text = text.slice(0, Math.max(0, maxChars - total)); cut = true; }
+    total += text.length;
+    if (text) files.push({ name: m.name, text });
+    if (cut) break;
+  }
+  return { files, cut };
+}

@@ -118,7 +118,13 @@ blockquote.said {
 .share { height: 6px; background: var(--rule); border-radius: 99px; margin: 10px 0 6px; overflow: hidden; }
 .share div { height: 100%; background: var(--gold); }
 .reteach { background: var(--panel); border: 1.5px solid var(--rule); border-radius: var(--radius-ui); padding: 12px 16px; }
-.reteach span { display: block; font-weight: 600; font-size: 14px; color: var(--soft); }
+.reteach span, .missed span { display: block; font-weight: 600; font-size: 14px; color: var(--soft); }
+.missed { border-left: 4px solid var(--gold); padding: 4px 0 4px 14px; margin: 12px 0; }
+.overview { font-size: 18px; max-width: 760px; margin: 8px 0 4px; }
+.loop { font-size: 15px; color: var(--soft); }
+.loop.warn { color: var(--ink); font-weight: 600; }
+.class-summary { max-width: 760px; margin-top: 24px; padding-top: 16px; border-top: 1.5px solid var(--rule); }
+.class-summary h4 { margin: 14px 0 2px; font-size: 16px; }
 
 .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; margin-top: 40px; padding-top: 16px; border-top: 1.5px solid var(--rule); }
 .controls #reset { padding-left: 0; }
@@ -185,7 +191,13 @@ button.tool.on { background: var(--ink); color: var(--paper); border-color: var(
 .catch:first-child { border-top: 0; }
 .catch h2 { font-size: 21px; color: var(--ink); font-weight: 800; margin-bottom: 10px; }
 .catch .controls-row { margin-top: 14px; }
-#catchups { margin-top: 18px; }
+#catchups { margin-top: 8px; }
+.after-h { font-size: 15px; font-weight: 600; color: var(--soft); text-transform: none; margin: 32px 0 0; padding-top: 16px; border-top: 1.5px solid var(--rule); }
+.sumpoint { padding: 14px 0 0; }
+.sumpoint h3 { font-size: 18px; font-weight: 800; margin: 0 0 4px; }
+.sumpoint p { margin: 0; }
+.tdump p { margin: 6px 0; }
+.tdump time { font-size: 13px; color: var(--soft); margin-right: 10px; font-variant-numeric: tabular-nums; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 

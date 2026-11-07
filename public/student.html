@@ -53,8 +53,9 @@
   </section>
 
   <section id="after" class="after" hidden>
-    <h1>Catch up</h1>
-    <p class="lede">These are the parts of class where you tapped.</p>
+    <h1>Today's class</h1>
+    <div id="classSum"></div>
+    <h2 class="after-h">Where you got lost</h2>
     <div id="catchups"></div>
   </section>
 </main>
@@ -69,7 +70,7 @@ const post = (url, data) => fetch(url, { method: "POST", body: JSON.stringify({ 
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const fmt = (t) => { const s = Math.max(0, Math.round(t)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
 let joinedCode = null; try { joinedCode = localStorage.getItem("lost-code"); } catch {}
-let lastCatch = "", lastLines = "", transcriptOpen = false, offline = false;
+let lastCatch = "", lastSum = "", lastLines = "", transcriptOpen = false, offline = false;
 // The line under the button: a short message after a tap, otherwise what the phase calls for.
 let ackOverride = "", phase = "waiting";
 const PHASE_ACK = { waiting: "The button turns on when class starts.", live: "Nobody sees who tapped.", ended: "Your summary shows up here once your professor sends it." };
@@ -160,6 +161,15 @@ function render(s) {
     }
   }
 
+  if (s.summary || s.transcript) {
+    const key = JSON.stringify([s.summary, s.transcript?.length]);
+    if (key !== lastSum) {
+      lastSum = key;
+      $("#classSum").innerHTML = s.summary
+        ? `<p class="lede">${esc(s.summary.overview || "")}</p>` + s.summary.points.map((p) => `<article class="sumpoint"><h3>${esc(p.title)}</h3><p>${esc(p.text)}</p></article>`).join("")
+        : `<details class="tdump"><summary>Everything your professor said (transcript)</summary>${s.transcript.map((l) => `<p><time>${fmt(l.t)}</time>${esc(l.text)}</p>`).join("") || "<p class='note'>Nothing was transcribed.</p>"}</details>`;
+    }
+  }
   if (s.catchup) {
     const key = JSON.stringify(s.catchup.map((m) => [m.index, m.explanation]));
     if (key === lastCatch) return; lastCatch = key;
@@ -173,7 +183,7 @@ function render(s) {
           <button data-i="${m.index}" data-k="still">Still confused</button>
           <button data-i="${m.index}" data-k="unhelpful" class="quiet">This didn't help</button>
         </div>
-      </article>`).join("") : `<p class="empty">You didn't tap in this class, so there's nothing to catch up on.</p>`;
+      </article>`).join("") : `<p class="empty">You didn't tap "I'm lost" in this class.</p>`;
   }
 }
 

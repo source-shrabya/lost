@@ -84,15 +84,24 @@ During class the professor can double-click a transcript line to fix it. The ori
 
 `node eval/compare.mjs` (Mac only) makes test audio with five macOS voices (US, UK, Indian, Australian, Irish), clean and with background talk, and compares each engine with and without course terms. It writes `eval/results.md`. The voices are synthetic, so real lecture audio will do worse; use it to compare settings.
 
-## Claude explanations
+## After-class summaries (Claude)
 
-Without a key, the app still works, and the catch-up shows the transcript of what was said. With a key, Claude writes a short explanation, a practice question and a re-teach suggestion for the professor:
+When the professor ends class, Claude Haiku 5.5 reads the whole transcript, plus any course files ticked "Use for this lecture", and writes:
+
+- for every student, a summary of the class in the order it was taught;
+- for the professor, a short note on where and why the class got lost, and for each lost moment what the explanation left out (quoting the professor), a way to re-teach it next class, and the catch-up the students who tapped will get;
+- for each student who tapped, a plain explanation of their moment and a practice question.
+
+The professor reads it and presses Send. Students who are still confused after their catch-up can say so, and the count shows on the professor's report.
+
+There are two ways to turn it on:
 
 ```
-ANTHROPIC_API_KEY=sk-ant-... npm start
+LOST_AI=cli npm start                  # free: uses the Claude Code command line signed in on this laptop
+ANTHROPIC_API_KEY=sk-ant-... npm start # Anthropic API, paid per call
 ```
 
-It uses `claude-opus-5-5` with the server-side refusal fallback turned on, so if the model declines a request the API retries it on another model.
+The `cli` mode runs `claude -p` with no tools from an empty folder, so it only sees the prompt. Without either, the app still works: the report shows what was said at each moment and students get the transcript instead of a summary.
 
 ## Running a class
 
@@ -131,7 +140,7 @@ The yellow FAKE DATA panel is for loud rooms and for testing alone. "Play sample
 
 | File | What it does |
 |---|---|
-| `server.js` | The whole backend: class state, taps, grouping, Claude call, live updates |
+| `server.js` | The whole backend: class state, taps, grouping, after-class Claude summaries, live updates |
 | `public/prof.html` | Professor screen: transcript, counter, timeline, report |
 | `public/student.html` | Student screen: join, button, catch-up |
 | `public/style.css` | Styles for both |
