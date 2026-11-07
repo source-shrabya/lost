@@ -506,3 +506,39 @@ test("a student who fires help requests too fast is slowed down", async () => {
   assert.ok(codes.includes(429), codes.join(","));
   await rivera.post(`/api/prof/sessions/${sid}/end`);
 });
+
+test("transcript lag: a tap re-matches to the line that was being said, and keeps the half-spoken words", async () => {
+  ai.setFakeProvider(fakeAi); aiMode = "ok";
+  const rivera = await as("prof"), jordan = await as("jordan"), sam = new Client();
+  const { sid, section } = await liveSession(rivera);
+  await sam.post("/api/auth/signup", { name: "Lag Tester", email: "lag@example.edu", password: "longenough1", role: "student" });
+  sam.csrf = (await sam.get("/api/me")).data.csrf;
+  await sam.post("/api/student/join", { code: section.join_code });
+  // pretend class started a minute ago so lines can have real times before the tap
+  db.run("UPDATE lecture_sessions SET started_at = ? WHERE id = ?", new Date(Date.now() - 60000).toISOString(), sid);
+  ["a is for apple", "b is for ball", "c is for cat", "d is for dog"].forEach((text, i) => live.addLine(sid, text, { t: 40 + i * 4 }));
+  // the professor is mid-way through "e"; the engine hasn't finished the line
+  live.runtime(sid).interim = "e is for eigenvalue";
+  const tap = (await jordan.post(`/api/student/sessions/${sid}/lost`)).data;
+  assert.equal(tap.phrases.at(-1).text, "d is for dog", "only finished lines exist at tap time");
+  assert.equal(tap.now, "e is for eigenvalue", "the words being said are saved with the tap");
+  assert.equal(tap.event.line_idx, 3);
+  const picker = (await sam.post(`/api/student/sessions/${sid}/lost`)).data;
+  await sam.post(`/api/student/events/${picker.event.id}/help`, { kind: "explain", anchor: "phrase", line: 3 }); // sam really meant "d"
+  // jordan asks for help right away, before "e" lands
+  await jordan.post(`/api/student/events/${tap.event.id}/help`, { kind: "explain", anchor: "current" });
+  assert.match(prompts.at(-1).prompt, /<being_said>e is for eigenvalue<\/being_said>/, "the AI sees the half-spoken sentence");
+  // "e" lands: it started 3 s before the tap, so the tap moves onto it
+  const tapT = db.one("SELECT t FROM confusion_events WHERE id = ?", tap.event.id).t;
+  const e = live.addLine(sid, "e is for eigenvalue", { t: tapT - 3 });
+  assert.equal(db.one("SELECT line_idx FROM confusion_events WHERE id = ?", tap.event.id).line_idx, e, "tap follows the late line");
+  assert.equal(db.one("SELECT line_idx FROM confusion_events WHERE id = ?", picker.event.id).line_idx, 3, "a line the student picked never moves");
+  const marks = (await rivera.get(`/api/prof/sessions/${sid}/live`)).data.marks;
+  assert.equal(marks[e], 1, "the professor's gold mark is on e");
+  // a line that started after the tap (or within reaction time) doesn't steal it
+  live.addLine(sid, "f is for function", { t: tapT - 0.5 });
+  live.addLine(sid, "g is for graph", { t: tapT + 2 });
+  assert.equal(db.one("SELECT line_idx FROM confusion_events WHERE id = ?", tap.event.id).line_idx, e);
+  live.runtime(sid).interim = "";
+  await endAndSummarise(rivera, sid);
+});

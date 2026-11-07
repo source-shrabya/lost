@@ -265,6 +265,8 @@ svg .dot-students { fill: var(--ink); }
 .phrase-list { display: grid; gap: 6px; margin: 10px 0 12px; }
 .phrase { justify-content: flex-start; text-align: left; font-weight: 400; line-height: 1.4; padding: 8px 12px; }
 .phrase time { font-size: 13px; color: var(--soft); margin-right: 8px; font-variant-numeric: tabular-nums; flex: none; }
+.phrase-now { flex-wrap: wrap; border-style: dashed; }
+.phrase-now .now-label { flex-basis: 100%; margin-bottom: 2px; font-size: 13px; color: var(--soft); }
 .optional { margin-top: 10px; }
 .chips-field { display: flex; flex-wrap: wrap; gap: 8px; }
 .chips-field legend { width: 100%; }

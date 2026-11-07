@@ -120,7 +120,7 @@
       try {
         const r = await api(`/api/student/sessions/${sid}/lost`, { method: "POST" });
         const same = H.ev?.id === r.event.id;
-        if (!same) { H.ev = r.event; H.phrases = r.phrases; H.cards = []; H.picked = null; H.catchups = 0; H.retries = 0; H.seq++; }
+        if (!same) { H.ev = r.event; H.phrases = r.phrases; H.now = r.now || null; H.cards = []; H.picked = null; H.catchups = 0; H.retries = 0; H.seq++; }
         st.ai = r.ai;
         $("#ack").textContent = `Marked at ${fmt(r.event.t)}.${r.others ? ` ${r.others} other${r.others === 1 ? "" : "s"} tapped in the last 90 seconds.` : ""} Your professor sees the moment, not your name.`;
         if (!same) showPicker(r.gaps);
@@ -136,7 +136,9 @@
         <p class="note">Your tap is saved. Pick a line or keep the default, and get a short explanation while class goes on.</p>
         ${gaps?.length ? `<p class="note warn">Part of the last minute wasn't transcribed (no audio reached Lost).</p>` : ""}
         <div class="phrase-list" role="group" aria-label="Recent lines from the lecture">
-          ${H.phrases.length ? H.phrases.map((p) => `<button class="phrase" data-line="${p.idx}"><time>${fmt(p.t)}</time>${esc(p.text)}</button>`).join("") : `<p class="note">Nothing has been transcribed yet.</p>`}
+          ${H.phrases.map((p) => `<button class="phrase" data-line="${p.idx}"><time>${fmt(p.t)}</time>${esc(p.text)}</button>`).join("")}
+          ${H.now ? `<button class="phrase phrase-now" data-now><span class="now-label">Being said when you tapped</span>${esc(H.now)}…</button>` : ""}
+          ${!H.phrases.length && !H.now ? `<p class="note">Nothing has been transcribed yet.</p>` : ""}
         </div>
         <div class="row">
           <button class="primary" id="explainCurrent">${H.phrases.length ? "Explain the current topic" : "Get help"}</button>
@@ -149,17 +151,18 @@
           <label for="q">Your question</label><input id="q" maxlength="300" placeholder="What does … mean?">
         </details>`;
       $("#closeHelp").onclick = () => { box.hidden = true; $("#lost").focus(); };
-      box.querySelectorAll(".phrase").forEach((b) => b.addEventListener("click", () => explain("phrase", Number(b.dataset.line))));
+      box.querySelectorAll(".phrase[data-line]").forEach((b) => b.addEventListener("click", () => explain("phrase", Number(b.dataset.line))));
+      box.querySelector(".phrase[data-now]")?.addEventListener("click", () => explain("current", null, { text: H.now }));
       $("#explainCurrent").onclick = () => explain($("#q").value.trim() ? "question" : "current");
       $("#explainEarlier").onclick = () => explain("earlier");
       box.scrollIntoView({ behavior: "smooth", block: "start" });
       $("#helpH").focus?.();
     }
 
-    async function explain(anchor, line = null) {
+    async function explain(anchor, line = null, picked = null) {
       const seq = H.seq;
       const body = { kind: "explain", anchor, line, category: $("input[name=cat]:checked")?.value || null, question: $("#q")?.value.trim() || null };
-      H.picked = line != null ? H.phrases.find((p) => p.idx === line) : null;
+      H.picked = picked || (line != null ? H.phrases.find((p) => p.idx === line) : null);
       $("#help").innerHTML = `<div class="help-head"><h2 id="helpH">Getting help…</h2></div>${H.picked ? `<blockquote class="help-quote">"${esc(H.picked.text)}"</blockquote>` : ""}<p class="note help-wait">Reading the lecture and course materials…</p>`;
       const r = await request(body);
       if (seq !== H.seq) return; // a newer tap replaced this one

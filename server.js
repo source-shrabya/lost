@@ -564,13 +564,14 @@ route("POST", "/api/student/sessions/:id/lost", (ctx) => {
     const last = one("SELECT idx FROM transcript_lines WHERE session_id = ? AND t <= ? ORDER BY idx DESC LIMIT 1", s.id, t + 0.5);
     const first = one("SELECT MIN(idx) i FROM transcript_lines WHERE session_id = ? AND t >= ?", s.id, t - 60);
     const id = newId(9);
-    run("INSERT INTO confusion_events (id, session_id, student_id, t, line_idx, context_from, context_to, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      id, s.id, u.id, t, last?.idx ?? null, first?.i ?? null, last?.idx ?? null, now());
+    const said = live.runtime(s.id).interim.trim().slice(0, 500) || null; // the sentence still being spoken
+    run("INSERT INTO confusion_events (id, session_id, student_id, t, line_idx, context_from, context_to, interim_text, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      id, s.id, u.id, t, last?.idx ?? null, first?.i ?? null, last?.idx ?? null, said, now());
     ev = one("SELECT * FROM confusion_events WHERE id = ?", id);
   }
   const phrases = all("SELECT idx, t, text FROM transcript_lines WHERE session_id = ? AND t <= ? ORDER BY idx DESC LIMIT 5", s.id, ev.t + 0.5).reverse();
   const gaps = help.gapsBetween(s.id, ev.t - 60, ev.t + 1);
-  return { event: { id: ev.id, t: ev.t, line_idx: ev.line_idx }, phrases, gaps, ai: aiAvailable(),
+  return { event: { id: ev.id, t: ev.t, line_idx: ev.line_idx }, phrases, now: ev.interim_text, gaps, ai: aiAvailable(),
     others: all("SELECT DISTINCT student_id FROM confusion_events WHERE session_id = ? AND t >= ? AND student_id != ?", s.id, ev.t - 90, u.id).length };
 });
 route("POST", "/api/student/events/:id/help", async (ctx, b) => {
@@ -583,7 +584,7 @@ route("POST", "/api/student/events/:id/help", async (ctx, b) => {
     if (!one("SELECT 1 FROM help_responses WHERE event_id = ? AND kind = 'explain' AND status IN ('ok', 'no_ai')", ev.id)) {
       const anchor = ["current", "phrase", "earlier", "question"].includes(b.anchor) ? b.anchor : "current";
       let line = Number.isInteger(b.line) ? one("SELECT idx FROM transcript_lines WHERE session_id = ? AND idx = ? AND t <= ?", ev.session_id, b.line, ev.t + 1)?.idx ?? null : null;
-      if (anchor === "current") line = ev.line_idx;
+      if (anchor === "current") line = null; // keep following the tap time as late lines arrive
       if (anchor === "earlier") line = null;
       const category = ["term", "reasoning", "connection", "missed"].includes(b.category) ? b.category : null;
       const question = typeof b.question === "string" ? b.question.trim().slice(0, 300) || null : null;
