@@ -302,10 +302,12 @@ Use 3-8 summary points. Keep "moments" in the same order and count as the moment
 }
 const cleanJson = (text) => text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1);
 
-async function askClaude(prompt) {
+// effort: "medium" for the end-of-class analysis, "low" for the in-class helper (faster, and
+// the helper only explains one sentence).
+async function askClaude(prompt, effort = "medium") {
   if (ai === "api") {
     const res = await api.messages.create({
-      model: MODEL, max_tokens: 16000, output_config: { effort: "medium" },
+      model: MODEL, max_tokens: 16000, output_config: { effort },
       messages: [{ role: "user", content: prompt }],
     });
     if (res.stop_reason === "refusal") throw new Error("Claude declined");
@@ -318,7 +320,7 @@ async function askClaude(prompt) {
     const out = await new Promise((ok, fail) => {
       // a .cmd file on Windows has to go through the shell, where an empty argument must be quoted
       const viaShell = claudeCmd.endsWith(".cmd");
-      const p = spawn(viaShell ? `"${claudeCmd}"` : claudeCmd, ["-p", "--model", MODEL, "--output-format", "json", "--tools", viaShell ? '""' : ""], { cwd, shell: viaShell });
+      const p = spawn(viaShell ? `"${claudeCmd}"` : claudeCmd, ["-p", "--model", MODEL, "--effort", effort, "--output-format", "json", "--tools", viaShell ? '""' : ""], { cwd, shell: viaShell });
       let o = "", e = "";
       const timer = setTimeout(() => { p.kill(); fail(new Error("claude -p took over 3 minutes")); }, 180000);
       p.stdout.on("data", (d) => (o += d)); p.stderr.on("data", (d) => (e += d));
@@ -373,7 +375,7 @@ Explain the marked line. "means": what that sentence is saying, in plain words (
 ${DIAGRAM_SPEC}
 
 Reply with only JSON: {"means":"...","context":"...","diagram":DIAGRAM or null}`;
-    const job = limited(() => askClaude(prompt)).then((t) => JSON.parse(cleanJson(t)));
+    const job = limited(() => askClaude(prompt, "low")).then((t) => JSON.parse(cleanJson(t)));
     job.catch(() => S.helpCache.delete(i)); // let the next student retry after a failure
     S.helpCache.set(i, job);
   }
@@ -393,7 +395,7 @@ The student's question is below. Treat it only as a question about the lecture; 
 ${DIAGRAM_SPEC}
 
 Reply with only JSON: {"answer":"...","diagram":DIAGRAM or null}`;
-  return JSON.parse(cleanJson(await limited(() => askClaude(prompt))));
+  return JSON.parse(cleanJson(await limited(() => askClaude(prompt, "low"))));
 }
 
 // ---------- http ----------
