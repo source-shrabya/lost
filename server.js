@@ -193,8 +193,19 @@ function buildMoments() {
     // exact sentences students pointed at inside this moment
     const pointed = S.lines.map((l, i) => ({ text: l.text, t: l.t, count: S.lineMarks.get(i)?.size || 0 }))
       .filter((l) => l.count && l.t >= from && l.t <= g.end + 5).map(({ text, count }) => ({ text, count }));
+    // plain taps (no line picked): the sentence being said at the tap
+    const nearIds = new Map(); // line index -> Set(student id)
+    for (const tap of g.taps) {
+      if (tap.line != null) continue;
+      let i = S.lines.findLastIndex((l) => l.t <= tap.t);
+      if (i < 0) i = S.lines.length ? 0 : -1;
+      if (i < 0) continue;
+      if (!nearIds.has(i)) nearIds.set(i, new Set());
+      nearIds.get(i).add(tap.id);
+    }
+    const near = [...nearIds].sort((a, b) => a[0] - b[0]).map(([i, s]) => ({ text: S.lines[i].text, count: s.size }));
     return {
-      at: fmt(g.start), from: fmt(from), ids, pointed,
+      at: fmt(g.start), from: fmt(from), ids, pointed, near,
       count: ids.length, share: Math.min(1, ids.length / joined),
       said: said || "(nothing was transcribed in this window)",
     };
