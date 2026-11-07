@@ -55,6 +55,7 @@
       <button class="primary" id="send">Send summaries to students</button>
     </div>
     <p class="note" id="aiNote"></p>
+    <button id="retryAi" hidden>Try the summary again</button>
     <p class="overview" id="profOverview" hidden></p>
     <div id="moments"></div>
     <details class="class-summary" id="sumBox" hidden>
@@ -177,10 +178,11 @@ function renderReport(r) {
   $("#aiNote").textContent = {
     off: "Claude is off (no API key), so the report shows only what you said at each moment, and students get the transcript instead of a summary.",
     working: "Claude is reading the lecture and writing the summaries…",
-    failed: "Claude didn't answer, so the report shows only what you said at each moment, and students get the transcript instead of a summary.",
+    failed: "Claude's summary didn't come through. Try again; if you already sent, students get the summary as soon as it arrives.",
     empty: "Nothing was transcribed, so there is nothing to summarize.",
     done: "Drafted by Claude from the transcript. Read it before you send.",
   }[r.aiStatus];
+  $("#retryAi").hidden = r.aiStatus !== "failed";
   $("#send").disabled = r.sent || r.aiStatus === "working";
   $("#send").textContent = r.sent ? "Sent to students" : "Send summaries to students";
   $("#profOverview").hidden = !r.profOverview;
@@ -204,7 +206,7 @@ function renderReport(r) {
       ${m.missed ? `<p class="missed"><span>What the explanation missed</span>${esc(m.missed)}</p>` : ""}
       ${m.reteach ? `<p class="reteach"><span>Try next class</span>${esc(m.reteach)}</p>` : ""}
       ${m.explanation ? `<details><summary>What students will get</summary><p>${esc(m.explanation)}</p><p><em>${esc(m.question)}</em> ${esc(m.answer)}</p></details>` : ""}
-      ${r.sent ? `<p class="loop${m.stillConfused || m.unhelpful ? " warn" : ""}">After the catch-up: ${m.stillConfused} still confused, ${m.unhelpful} said it didn't help.</p>` : ""}
+      ${r.sent ? `<p class="loop${m.stillConfused || m.unhelpful ? " warn" : ""}">After the catch-up: ${m.gotIt || 0} got it, ${m.stillConfused} still confused, ${m.unhelpful} said it didn't help.</p>` : ""}
     </article>`).join("") : `<p class="empty">Nobody tapped during this class.</p>`;
 }
 
@@ -246,6 +248,7 @@ $("#mic").onclick = () => (listening ? stopMic() : startMic());
 $("#end").onclick = () => { stopMic(); post("/api/end"); };
 $("#reset").onclick = () => { stopMic(); lastReport = ""; post("/api/reset"); };
 $("#send").onclick = () => post("/api/send");
+$("#retryAi").onclick = () => { $("#retryAi").disabled = true; post("/api/reanalyze").finally(() => ($("#retryAi").disabled = false)); };
 $("#typeForm").onsubmit = (e) => { e.preventDefault(); const v = $("#typed").value.trim(); if (v) post("/api/line", { text: v }); $("#typed").value = ""; };
 
 // ---------- demo mode ----------

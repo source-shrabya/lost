@@ -235,18 +235,23 @@ function render(s) {
     }
   }
   if (s.catchup) {
-    const key = JSON.stringify(s.catchup.map((m) => [m.index, m.explanation]));
+    const key = JSON.stringify(s.catchup.map((m) => [m.index, m.explanation, m.choice, m.saidLines?.length]));
     if (key === lastCatch) return; lastCatch = key;
     $("#catchups").innerHTML = s.catchup.length ? s.catchup.map((m) => `
       <article class="catch">
-        <h2><span class="at">${m.at}</span>${m.topic ? esc(m.topic) : "Where you got lost"}</h2>
+        <h2><span class="at">${m.at}</span>${m.topic ? esc(m.topic) : "The part you marked"}</h2>
+        ${m.saidLines?.some((l) => l.mine) ? `<p class="lost-at"><span>You got lost at</span>${m.saidLines.filter((l) => l.mine).map((l) => `"${esc(l.text)}"`).join("<br>")}</p>` : ""}
         ${m.explanation ? `<p>${esc(m.explanation)}</p>` : ""}
-        <details ${m.explanation ? "" : "open"}><summary>What your professor said</summary><blockquote class="said">${esc(m.said)}</blockquote></details>
+        <details ${m.explanation ? "" : "open"}><summary>What your professor said</summary>${m.saidLines?.length
+          ? `<div class="said">${m.saidLines.map((l) => `<p${l.mine ? ` class="mine"` : ""}><time>${fmt(l.t)}</time>${esc(l.text)}</p>`).join("")}</div>`
+          : `<blockquote class="said">${esc(m.said)}</blockquote>`}</details>
         ${m.question ? `<details><summary>Check yourself: ${esc(m.question)}</summary><p>${esc(m.answer)}</p></details>` : ""}
-        <div class="controls-row">
-          <button data-i="${m.index}" data-k="still">Still confused</button>
-          <button data-i="${m.index}" data-k="unhelpful" class="quiet">This didn't help</button>
+        <p class="help-ask">Does it make sense now?</p>
+        <div class="controls-row choice">
+          ${[["gotit", "I got it"], ["still", "Still confused"], ["unhelpful", "This didn't help"]].map(([k, label]) =>
+            `<button data-i="${m.index}" data-k="${k}" aria-pressed="${m.choice === k}">${label}</button>`).join("")}
         </div>
+        <p class="note choice-note">${{ gotit: "Nice. Your professor sees that this part landed.", still: "Your professor sees this part is still unclear.", unhelpful: "Your professor sees this catch-up didn't help." }[m.choice] || ""}</p>
       </article>`).join("") : `<p class="empty">You didn't tap "I'm lost" in this class.</p>`;
   }
 }
@@ -260,8 +265,10 @@ $("#tlines").onclick = (e) => {
 
 $("#catchups").onclick = async (e) => {
   const b = e.target.closest("button[data-i]"); if (!b) return;
-  await post("/api/feedback", { index: Number(b.dataset.i), kind: b.dataset.k === "unhelpful" ? "unhelpful" : "still" });
-  b.disabled = true; b.textContent = "Sent to your professor";
+  const row = b.parentElement, k = b.dataset.k;
+  row.querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", x === b));
+  row.nextElementSibling.textContent = { gotit: "Nice. Your professor sees that this part landed.", still: "Your professor sees this part is still unclear.", unhelpful: "Your professor sees this catch-up didn't help." }[k];
+  await post("/api/feedback", { index: Number(b.dataset.i), kind: k });
 };
 
 // ---------- professor's sound through the Lost server ----------

@@ -306,3 +306,16 @@ input[type="checkbox"] { width: 20px; height: 20px; min-height: 0; padding: 0; m
   .dg-row .dg-box { max-width: none; }
   .dg-arrow { transform: rotate(90deg); align-self: center; line-height: 1; }
 }
+
+/* catch-up: the line the student marked */
+.lost-at { border-left: 4px solid var(--gold); background: #fff8e1; padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 4px 0 14px; color: var(--ink); }
+.lost-at span { display: block; font-size: 13px; font-weight: 700; color: var(--soft); margin-bottom: 2px; }
+div.said { margin: 8px 0 12px; }
+div.said p { margin: 0; padding: 6px 10px; color: var(--soft); border-left: 3px solid var(--rule); }
+div.said p.mine { color: var(--ink); background: #fff8e1; border-left: 4px solid var(--gold); font-weight: 600; }
+div.said time { font-size: 13px; color: var(--soft); margin-right: 10px; font-variant-numeric: tabular-nums; font-weight: 400; }
+.choice button[aria-pressed="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.choice-note { min-height: 1.4em; margin-top: 8px; }
+#retryAi { margin: 0 0 12px; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .lost-at, :root:not([data-theme="light"]) div.said p.mine { background: rgba(255, 199, 44, 0.14); } }
+:root[data-theme="dark"] .lost-at, :root[data-theme="dark"] div.said p.mine { background: rgba(255, 199, 44, 0.14); }
