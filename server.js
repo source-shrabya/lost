@@ -370,7 +370,7 @@ function explainLine(i) {
 
 ${helpContext(i)}
 
-Explain the marked line. "means": what that sentence is saying, in plain words (1-2 sentences). If the speech-to-text clearly garbled it, say what was most likely said. "context": how it connects to what the professor said just before, so the student can pick the thread back up (1-2 sentences). Only use what the professor said and common knowledge of the subject; don't jump ahead to new topics.
+Explain the marked line. "means": what that sentence is saying, in plain words (1-2 sentences). If the speech-to-text clearly garbled it, say what was most likely said; otherwise don't mention the speech-to-text at all. "context": how it connects to what the professor said just before, so the student can pick the thread back up (1-2 sentences). Only use what the professor said and common knowledge of the subject; don't jump ahead to new topics.
 
 ${DIAGRAM_SPEC}
 
