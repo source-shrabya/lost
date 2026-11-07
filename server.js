@@ -116,7 +116,7 @@ function profView() {
   const joined = realStudents();
   const share = joined ? lost.size / joined : 0;
   return {
-    code: S.code, phase: S.phase, elapsed: now(), joined,
+    code: S.code, phase: S.phase, elapsed: now(), joined, publicUrl,
     lostCount: lost.size, share, alert: lost.size > 0 && share >= ALERT_SHARE,
     lines: linesFrom(S.lines.length - 40),
     // "server" means a speech engine on the server writes the transcript; "browser" means Chrome does
@@ -487,6 +487,30 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
+// ---------- public link (npm run share) ----------
+// Campus Wi-Fi usually blocks laptop-to-laptop traffic, so `npm run share` also starts a Cloudflare
+// quick tunnel and shows its https link on the professor screen. The link changes on every start.
+let publicUrl = "", tunnel = null;
+function startTunnel() {
+  const names = process.platform === "win32" ? ["cloudflared.exe"] : ["cloudflared"];
+  const dirs = [...(process.env.PATH || "").split(path.delimiter), "/opt/homebrew/bin", "/usr/local/bin"];
+  const bin = dirs.flatMap((d) => names.map((n) => path.join(d, n))).find((f) => fs.existsSync(f));
+  if (!bin) {
+    console.log(`  Public link: cloudflared is not installed. Mac: brew install cloudflared. Windows: winget install --id Cloudflare.cloudflared. Then npm run share again.`);
+    return;
+  }
+  tunnel = spawn(bin, ["tunnel", "--no-autoupdate", "--url", `http://localhost:${PORT}`]);
+  let shown = false;
+  const look = (d) => {
+    const m = String(d).match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
+    if (m && !shown) { shown = true; publicUrl = m[0]; console.log(`\n  Students (any network):  ${publicUrl}   (code ${S.code})\n`); }
+  };
+  tunnel.stdout.on("data", look); tunnel.stderr.on("data", look);
+  tunnel.on("exit", (code) => { publicUrl = ""; tunnel = null; console.log(`  Public link stopped (cloudflared exited ${code}). Restart npm run share to get a new one.`); });
+}
+for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { tunnel?.kill(); process.exit(0); });
+process.on("exit", () => tunnel?.kill());
+
 server.listen(PORT, "0.0.0.0", () => {
   const ips = Object.values(os.networkInterfaces()).flat().filter((n) => n && n.family === "IPv4" && !n.internal).map((n) => n.address);
   console.log(`\nLost is running.\n`);
@@ -496,4 +520,5 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`\n  Claude summaries: ${ai === "api" ? `ON (${MODEL}, Anthropic API)` : ai === "cli" ? `ON (${MODEL} through Claude Code, free)` : "OFF (install Claude Code and sign in for free summaries, or set ANTHROPIC_API_KEY)"}`);
   console.log(`  Transcript: ${engine.name === "deepgram" ? "Deepgram Nova-3 (audio goes to Deepgram)" : engine.name !== "off" ? `${engine.name}, loading the model (the first start downloads it)…` : `Chrome speech recognition, because ${engine.why}`}`);
   console.log(`  Course terms in use: ${vocabTerms().length}\n`);
+  if (process.argv.includes("--share") || process.env.SHARE === "1") { console.log("  Starting the public link…"); startTunnel(); }
 });

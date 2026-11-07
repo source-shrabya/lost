@@ -15,7 +15,7 @@ npm install
 npm start
 ```
 
-That is enough to run a class. The transcript then comes from Chrome's speech recognition, and the after-class summaries are off. Each of these adds one piece:
+That is enough to run a class on a network that lets laptops reach each other. On campus Wi-Fi, use `npm run share` instead (see below). The transcript then comes from Chrome's speech recognition, and the after-class summaries are off. Each of these adds one piece:
 
 1. Free after-class summaries: install Claude Code (claude.com/claude-code), run `claude` once in a terminal and sign in. Lost finds it on its own; the terminal says `Claude summaries: ON (claude-haiku-5-5 through Claude Code, free)`.
 2. Better transcripts: put a Deepgram key in `.env` (see Deepgram below).
@@ -29,6 +29,25 @@ npm install
 ```
 
 If you did the Python setup, also run `.venv/bin/pip install -r requirements.txt` (Windows: `.venv\Scripts\pip install -r requirements.txt`).
+
+## Run it on campus Wi-Fi (npm run share)
+
+Campus Wi-Fi usually blocks one laptop from opening a page on another, even when both are on the same network. `npm run share` gets around that: it starts Lost and a Cloudflare quick tunnel together, and students join through a public https link that works on any network, phones included.
+
+Install cloudflared once (no account needed):
+
+```
+brew install cloudflared                       # Mac
+winget install --id Cloudflare.cloudflared     # Windows
+```
+
+Then, on the professor laptop:
+
+```
+npm run share
+```
+
+After a few seconds the terminal prints `Students (any network): https://....trycloudflare.com`, and the professor screen shows the same link above the class code. The professor still opens the `localhost` link from the terminal, because Chrome only allows the mic on localhost or https. The public link changes every time Lost starts, so share it again after a restart. Stopping Lost (Ctrl+C) stops the tunnel too.
 
 ## Run it (two laptops, same Wi-Fi)
 

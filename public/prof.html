@@ -118,6 +118,8 @@ let state = null, lastLines = "", lastReport = "";
 function render(s) {
   state = s;
   $("#code").textContent = s.code;
+  const where = s.publicUrl ? s.publicUrl.replace("https://", "") : location.hostname === "localhost" ? "the student link from the terminal" : location.host;
+  if ($("#url").textContent !== where) $("#url").textContent = where;
   $("#codeSmall").textContent = s.code;
   document.body.dataset.phase = s.phase;
   $("#joined").textContent = s.joined;
