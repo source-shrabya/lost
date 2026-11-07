@@ -1,706 +1,726 @@
-// Lost: one professor laptop runs this server, students join from any device on the same Wi-Fi.
-// No database: everything lives in memory for one class at a time.
+// Lost: professor and student portal for marking confusion during a lecture and getting unstuck.
+// Plain Node http server, SQLite for persistence. See README.md for setup and configuration.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { fileURLToPath } from "node:url";
-// process.loadEnvFile (for .env) needs Node 20.12 or newer; older versions would skip .env silently.
-const [maj, min] = process.versions.node.split(".").map(Number);
-if (maj < 20 || (maj === 20 && min < 12)) { console.error(`Lost needs Node.js 20.12 or newer (this is ${process.version}). Install the LTS from nodejs.org.`); process.exit(1); }
-// Secrets such as DEEPGRAM_API_KEY live in .env (never committed). Variables set in the terminal win.
-try { process.loadEnvFile(path.join(path.dirname(fileURLToPath(import.meta.url)), ".env")); } catch {}
-import { startEngine, engine, newStream, feed, endStream, setTerms } from "./engines.js";
-import { loadCourse, course, setDetails, addMaterial, addNotes, updateMaterial, deleteMaterial, vocabTerms, lectureMaterials } from "./course.js";
-import Anthropic from "@anthropic-ai/sdk";
-
-const here = path.dirname(fileURLToPath(import.meta.url));
-const PORT = Number(process.env.PORT || 3000);
-const LOOKBACK = 90;      // seconds before a tap that may hold the confusing part
-const TAP_COOLDOWN = 20;  // one student counts once per 20 s, so spamming can't fake a spike
-const CLUSTER_GAP = 45;   // taps closer than this belong to the same "lost moment"
-const ALERT_SHARE = 0.1;  // professor alert once 10% of the class is lost
-
-// After-class summaries use Claude Haiku 5.5. Two ways to reach it:
-//  - ANTHROPIC_API_KEY in .env: the Anthropic API (paid per call, a fraction of a cent per class).
-//  - Otherwise, if Claude Code is installed, its command line (`claude -p`), which runs on the
-//    signed-in Claude subscription, so testing and demos cost nothing extra.
-// LOST_AI=api|cli|off forces one.
-const MODEL = "claude-haiku-5-5";
-// Find the claude command on PATH (claude, claude.exe or claude.cmd on Windows).
-function findClaude() {
-  const names = process.platform === "win32" ? ["claude.exe", "claude.cmd"] : ["claude"];
-  for (const dir of (process.env.PATH || "").split(path.delimiter)) {
-    for (const n of names) { const f = path.join(dir, n); if (dir && fs.existsSync(f)) return f; }
-  }
-  return null;
-}
-const claudeCmd = findClaude();
-const want = (process.env.LOST_AI || "").toLowerCase();
-const api = process.env.ANTHROPIC_API_KEY && want !== "cli" && want !== "off" ? new Anthropic() : null;
-const ai = want === "off" ? null : api ? "api" : claudeCmd && want !== "api" ? "cli" : null;
-
-// ---------- security ----------
-// The professor screen and every class-control action need this key. It is printed once in the
-// terminal and never sent to students, so someone with the public student link can't control the class.
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
-const PROF_KEY = process.env.PROF_KEY || crypto.randomBytes(16).toString("hex");
-const isProf = (req, url) => {
-  const given = req.headers["x-prof-key"] || url.searchParams.get("key") || "";
-  return given.length === PROF_KEY.length && crypto.timingSafeEqual(Buffer.from(given), Buffer.from(PROF_KEY));
-};
-const MAX_BODY = 32 * 1024;       // reject huge request bodies
-const MAX_STUDENTS = 300;
-const MAX_STREAMS = 400;          // open live connections
-const RATE = { perSecond: 15, burst: 40 }; // per visitor
-const buckets = new Map();
-function allowed(ip) {
-  const t = Date.now(); const b = buckets.get(ip) || { tokens: RATE.burst, at: t };
-  b.tokens = Math.min(RATE.burst, b.tokens + ((t - b.at) / 1000) * RATE.perSecond); b.at = t;
-  buckets.set(ip, b);
-  if (b.tokens < 1) return false;
-  b.tokens -= 1; return true;
+import { fileURLToPath } from "node:url";
+
+const [maj, min] = process.versions.node.split(".").map(Number);
+if (maj < 20 || (maj === 20 && min < 12)) { console.error(`Lost needs Node.js 20.12 or newer (this is ${process.version}).`); process.exit(1); }
+const here = path.dirname(fileURLToPath(import.meta.url));
+try { process.loadEnvFile(path.join(here, ".env")); } catch {}
+
+const { openDb, one, all, run, now, newId, parse, tx, joinCode } = await import("./lib/db.js");
+const auth = await import("./lib/auth.js");
+const { initAi, aiProvider, aiAvailable, MODEL, AiError } = await import("./lib/ai.js");
+const mat = await import("./lib/materials.js");
+const canvas = await import("./lib/canvas.js");
+const jobs = await import("./lib/jobs.js");
+const summary = await import("./lib/summary.js");
+const help = await import("./lib/help.js");
+const live = await import("./lib/live.js");
+const { startEngine, engine } = await import("./engines.js");
+const { seedDemo, DEMO_USERS, DEMO_PASSWORD } = await import("./lib/seed.js");
+const QRCode = (await import("qrcode")).default;
+
+const PORT = Number(process.env.PORT || 3000);
+const DATA = process.env.LOST_DATA || path.join(here, "data");
+const DEMO = process.env.LOST_DEMO ? process.env.LOST_DEMO === "1" : process.env.NODE_ENV !== "production";
+const PROF_SIGNUP_CODE = process.env.PROF_SIGNUP_CODE || "";
+const helpBurst = () => Number(process.env.LOST_HELP_BURST) || 12; // AI requests a student can make in a burst
+
+export async function boot({ dbFile = process.env.LOST_DB || path.join(DATA, "lost.db"), listen = true, port = PORT, seed = DEMO, engines = true, jobsAuto = true } = {}) {
+  openDb(dbFile, path.join(here, "migrations"));
+  auth.loadSecret(DATA);
+  canvas.seedInstitutions();
+  mat.initMaterials(here);
+  initAi();
+  if (engines) startEngine({ here, termsFile: path.join(DATA, "terms.txt"), onPartial: live.onEnginePartial, onLine: live.onEngineLine });
+  if (seed) await seedDemo();
+  live.recoverSessions();
+  if (jobsAuto) jobs.startJobs(); else jobs.recoverJobs();
+  const gapTimer = setInterval(() => live.checkGaps(), 2000); gapTimer.unref();
+  const server = http.createServer(handle);
+  if (listen) await new Promise((ok) => server.listen(port, "0.0.0.0", ok));
+  return server;
 }
-setInterval(() => { const t = Date.now(); for (const [ip, b] of buckets) if (t - b.at > 60000) buckets.delete(ip); }, 60000);
-// Behind the Cloudflare tunnel every request comes from 127.0.0.1, and Cloudflare sets the real visitor address here.
-const clientIp = (req) => String(req.headers["cf-connecting-ip"] || req.socket.remoteAddress || "");
+
+// ---------- security ----------
 const SECURITY_HEADERS = {
   "x-content-type-options": "nosniff",
   "x-frame-options": "DENY",
-  "referrer-policy": "no-referrer",
-  "content-security-policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
-  "permissions-policy": "geolocation=(), payment=(), usb=()",
+  "referrer-policy": "same-origin",
+  "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+  "permissions-policy": "geolocation=(), payment=(), usb=(), camera=()",
 };
-const PROF_ONLY = new Set(["/api/start", "/api/line", "/api/end", "/api/send", "/api/reset", "/api/demo-taps", "/api/reanalyze", "/api/demo-students",
-  "/api/course", "/api/notes", "/api/material-update", "/api/material-delete", "/api/line-edit"]);
-const MAX_UPLOAD = 15 * 1024 * 1024;
-const PUBLIC_FILES = new Set(["student.html", "prof.html", "style.css", "diagram.js"]);
-
-// ---------- state ----------
-let S;
-// CLASS_CODE lets a restart keep the code students already have (used once, for the first class).
-let codeFromEnv = /^[A-Z0-9]{4}$/.test(process.env.CLASS_CODE || "") ? process.env.CLASS_CODE : null;
-const firstCode = () => { const c = codeFromEnv; codeFromEnv = null; return c; };
-function reset() {
-  S = {
-    code: firstCode() || Math.random().toString(36).slice(2, 6).toUpperCase(),
-    phase: "waiting",          // waiting | live | ended
-    startedAt: null,
-    lines: [],                 // { t, text }
-    students: new Map(),       // id -> { fake }
-    taps: [],                  // { id, t: moment in class, at: when tapped, line }
-    lineMarks: new Map(),      // line index -> Set(student id) who pointed at that exact line
-    lastTap: new Map(),        // id -> t
-    report: null,              // { moments, ai, sent }
-    interim: "",               // words of the line the professor is still saying
-    stillConfused: new Map(),  // momentIndex -> Set(id)
-    unhelpful: new Map(),
-    gotIt: new Map(),          // momentIndex -> Set(id): "I got it" after the catch-up
-    helpCache: new Map(),      // line index -> Promise of the AI explanation (shared by everyone who asks)
-    help: new Map(),           // student id -> Map(line index -> { helped: null | true | false, followups })
-  };
+const buckets = new Map();
+function allowed(key, perSecond = 15, burst = 40) {
+  const t = Date.now(); const b = buckets.get(key) || { tokens: burst, at: t };
+  b.tokens = Math.min(burst, b.tokens + ((t - b.at) / 1000) * perSecond); b.at = t;
+  buckets.set(key, b);
+  if (b.tokens < 1) return false;
+  b.tokens -= 1; return true;
 }
-reset();
+setInterval(() => { const t = Date.now(); for (const [k, b] of buckets) if (t - b.at > 120000) buckets.delete(k); }, 60000).unref();
+const clientIp = (req) => String(req.headers["cf-connecting-ip"] || req.socket.remoteAddress || "");
+const isHttps = (req) => req.headers["x-forwarded-proto"] === "https" || (process.env.PUBLIC_URL || "").startsWith("https://");
 
-const now = () => (S.startedAt ? (Date.now() - S.startedAt) / 1000 : 0);
-const realStudents = () => S.students.size;
+class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
+const fail = (status, message) => { throw new HttpError(status, message); };
 
-function lostNow() {
-  const t = now();
-  return new Set(S.taps.filter((x) => t - (x.at ?? x.t) <= LOOKBACK).map((x) => x.id));
-}
-
-// ---------- check-ins ----------
-const clients = { student: new Map() }; // student id -> last check-in time
-
-function profView() {
-  const lost = lostNow();
-  const joined = realStudents();
-  const share = joined ? lost.size / joined : 0;
-  return {
-    code: S.code, phase: S.phase, elapsed: now(), joined, publicUrl,
-    lostCount: lost.size, share, alert: lost.size > 0 && share >= ALERT_SHARE,
-    lines: linesFrom(S.lines.length - 40),
-    // "server" means a speech engine on the server writes the transcript; "browser" means Chrome does
-    transcriber: engine.ready ? "server" : "browser",
-    transcriberName: engine.ready ? engine.label : "Chrome speech recognition",
-    engineStatus: engine.ready ? engine.status : "",
-    engineProblem: engine.problem,
-    interim: S.interim || "",
-    course: { ...course, termsInUse: vocabTerms().length },
-    taps: S.taps.map((x) => x.t),
-    report: S.report && {
-      ...S.report,
-      moments: S.report.moments.map(({ ids, ...m }, i) => ({ // never send student ids to the professor
-        ...m,
-        stillConfused: S.stillConfused.get(i)?.size || 0,
-        unhelpful: S.unhelpful.get(i)?.size || 0,
-        gotIt: S.gotIt.get(i)?.size || 0,
-      })),
-    },
-  };
-}
-
-// Transcript lines with their index (so a student can point at one) and how many students marked each.
-function linesFrom(start, id) {
-  start = Math.max(0, start);
-  return S.lines.slice(start).map((l, k) => {
-    const marks = S.lineMarks.get(start + k);
-    // students get only the words; the professor also sees edits and unsure words
-    return id ? { t: l.t, text: l.text, i: start + k, mine: !!marks?.has(id) } : { ...l, i: start + k, marks: marks?.size || 0 };
-  });
-}
-
-// Lines this student pointed at, plus the line being said at each plain tap.
-function myLines(id) {
-  const own = new Set();
-  for (const [i, set] of S.lineMarks) if (set.has(id)) own.add(i);
-  for (const tap of S.taps) {
-    if (tap.id !== id || tap.line != null) continue;
-    const i = S.lines.findLastIndex((l) => l.t <= tap.t);
-    if (i >= 0) own.add(i);
-  }
-  return own;
-}
-const FEEDBACK = { gotit: "gotIt", still: "stillConfused", unhelpful: "unhelpful" };
-const choiceOf = (index, id) => Object.keys(FEEDBACK).find((k) => S[FEEDBACK[k]].get(index)?.has(id)) || null;
-
-function studentView(id, wantLines) {
-  const mine = S.report?.sent
-    ? S.report.moments.map((m, i) => ({ ...m, index: i })).filter((m) => m.ids.includes(id))
-    : null;
-  return {
-    phase: S.phase, code: S.code,
-    joined: S.students.has(id),
-    // the professor's notes stay with the professor; the student's own lines are marked
-    catchup: mine && mine.map(({ ids, missed, reteach, win, ...m }) => {
-      const own = myLines(id);
-      return { ...m, saidLines: (win || []).map((i) => ({ t: S.lines[i].t, text: S.lines[i].text, mine: own.has(i) })), choice: choiceOf(m.index, id) };
-    }),
-    summary: S.report?.sent ? S.report.summary : null,
-    // without Claude there is no written summary, so students get the transcript instead
-    transcript: S.report?.sent && !S.report.summary ? S.lines.map((l) => ({ t: l.t, text: l.text })) : null,
-    sent: !!S.report?.sent,
-    // live transcript, only while the student has it open
-    lines: wantLines && S.phase === "live" ? linesFrom(S.lines.length - 60, id) : null,
-    audio: relay.header ? { id: relay.id, seq: relay.seq } : null,
-  };
-}
-
-// ---------- professor's sound ----------
-// The professor's page uploads its mic in 1-second WebM pieces and students who tap Listen fetch
-// them. Going through the server works across any two networks. Piece 0 holds the file header
-// every player needs first.
-const relay = { id: 0, seq: -1, header: null, pieces: new Map() };
 function readRaw(req, limit) {
   return new Promise((ok) => {
-    const parts = []; let size = 0;
-    req.on("data", (c) => { size += c.length; if (size > limit) { ok(null); req.destroy(); } else parts.push(c); });
-    req.on("end", () => ok(Buffer.concat(parts)));
+    const parts = []; let size = 0, over = false;
+    req.on("data", (c) => { size += c.length; if (size > limit) { over = true; req.destroy(); } else parts.push(c); });
+    req.on("end", () => ok(over ? null : Buffer.concat(parts)));
+    req.on("close", () => ok(over ? null : Buffer.concat(parts)));
   });
 }
-
-// ---------- transcript ----------
-// The speech engines live in engines.js, course materials in course.js.
-loadCourse(here);
-startEngine({
-  here, termsFile: path.join(here, "data", "terms.txt"),
-  onPartial: (text) => { if (S.phase === "live") S.interim = text.slice(0, 500); },
-  onLine: ({ text, wallStart, unsure }) => {
-    if (S.phase !== "live" || !text.trim()) return;
-    const t = Math.max(0, (wallStart - S.startedAt) / 1000);
-    S.lines.push({ t, text: text.trim().slice(0, 1000), ...(unsure?.length ? { unsure: unsure.slice(0, 20) } : {}) });
-    S.interim = "";
-  },
-});
-setTerms(vocabTerms());
-
-// Pages check in every second (GET /api/poll). Streams were dropped because the Cloudflare
-// tunnel holds back streaming responses.
-setInterval(() => { const t = Date.now(); for (const [id, seen] of clients.student) if (t - seen > 60000) clients.student.delete(id); }, 30000);
-
-// ---------- report ----------
-function fmt(t) { const s = Math.max(0, Math.round(t)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
-
-function buildMoments() {
-  const taps = [...S.taps].sort((a, b) => a.t - b.t);
-  const groups = [];
-  for (const tap of taps) {
-    const g = groups.at(-1);
-    if (g && tap.t - g.end <= CLUSTER_GAP) { g.end = tap.t; g.taps.push(tap); }
-    else groups.push({ start: tap.t, end: tap.t, taps: [tap] });
-  }
-  const joined = Math.max(1, realStudents());
-  return groups.map((g) => {
-    const ids = [...new Set(g.taps.map((x) => x.id))];
-    const from = Math.max(0, g.start - LOOKBACK);
-    const said = S.lines.filter((l) => l.t >= from && l.t <= g.end + 5).map((l) => l.text).join(" ");
-    // exact sentences students pointed at inside this moment
-    const pointed = S.lines.map((l, i) => ({ text: l.text, t: l.t, count: S.lineMarks.get(i)?.size || 0 }))
-      .filter((l) => l.count && l.t >= from && l.t <= g.end + 5).map(({ text, count }) => ({ text, count }));
-    // plain taps (no line picked): the sentence being said at the tap
-    const nearIds = new Map(); // line index -> Set(student id)
-    for (const tap of g.taps) {
-      if (tap.line != null) continue;
-      let i = S.lines.findLastIndex((l) => l.t <= tap.t);
-      if (i < 0) i = S.lines.length ? 0 : -1;
-      if (i < 0) continue;
-      if (!nearIds.has(i)) nearIds.set(i, new Set());
-      nearIds.get(i).add(tap.id);
-    }
-    const near = [...nearIds].sort((a, b) => a[0] - b[0]).map(([i, s]) => ({ text: S.lines[i].text, count: s.size }));
-    // how the in-class AI help went for the students of this moment
-    let aiAsked = 0, aiHelped = 0, aiNot = 0;
-    for (const sid of ids) {
-      const mine = [...(S.help.get(sid) || [])].filter(([i]) => S.lines[i] && S.lines[i].t >= from && S.lines[i].t <= g.end + 5).map(([, h]) => h);
-      if (!mine.length) continue;
-      aiAsked++;
-      if (mine.some((h) => h.helped === false)) aiNot++; else if (mine.some((h) => h.helped === true)) aiHelped++;
-    }
-    const win = S.lines.map((l, i) => i).filter((i) => S.lines[i].t >= from && S.lines[i].t <= g.end + 5);
-    return {
-      aiAsked, aiHelped, aiNot, win,
-      at: fmt(g.start), from: fmt(from), ids, pointed, near,
-      count: ids.length, share: Math.min(1, ids.length / joined),
-      said: said || "(nothing was transcribed in this window)",
-    };
-  });
+async function readJson(req) {
+  const buf = await readRaw(req, 64 * 1024);
+  if (!buf) fail(413, "Too large.");
+  try { const v = JSON.parse(buf.toString("utf8") || "{}"); return v && typeof v === "object" && !Array.isArray(v) ? v : {}; } catch { fail(400, "Bad JSON."); }
+}
+function send(res, status, data, headers = {}) {
+  if (res.headersSent) return;
+  res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store", ...SECURITY_HEADERS, ...headers });
+  res.end(JSON.stringify(data));
 }
 
-// One Claude call after class. It reads the whole transcript (plus the course files ticked for this
-// lecture) and writes three things: a class summary every student gets, a short "where the class got
-// lost" overview for the professor, and for each lost moment what the explanation left out, how to
-// re-teach it, and a catch-up for the students who tapped.
-async function runAnalysis() {
-  const r = S.report, moments = r.moments;
-  try {
-    const out = await analyze(moments);
-    if (out) {
-      if (Array.isArray(out.moments)) moments.forEach((m, i) => Object.assign(m, out.moments[i] || {}));
-      if (out.summary && Array.isArray(out.summary.points)) {
-        if (!Array.isArray(out.summary.patterns)) out.summary.patterns = [];
-        r.summary = out.summary;
-      }
-      r.profOverview = typeof out.profOverview === "string" ? out.profOverview : "";
-    }
-    r.aiStatus = ai ? (out ? "done" : S.lines.length ? "failed" : "empty") : "off";
-  } catch (e) {
-    console.error("Claude call failed:", e?.message || e);
-    r.aiStatus = "failed";
-  }
-}
-
-async function analyze(moments) {
-  if (!ai || S.lines.length === 0) return null;
-  const transcript = S.lines.map((l) => `[${fmt(l.t)}] ${l.text}`).join("\n");
-  const mats = lectureMaterials();
-  const matBlock = mats.files.length
-    ? `Course materials the professor uploaded for this lecture${mats.cut ? " (cut short, they were very long)" : ""}:\n` +
-      mats.files.map((f) => `<file name="${f.name}">\n${f.text}\n</file>`).join("\n")
-    : "No course materials were uploaded.";
-  const momentBlock = moments.length
-    ? moments.map((m, i) => {
-        const marks = [...m.pointed.map((l) => `"${l.text}" (${l.count} pointed at this exact line)`),
-                       ...m.near.map((l) => `"${l.text}" (${l.count} tapped while this was being said)`)];
-        const aiLine = m.aiAsked ? `\nDuring class an AI explained it to ${m.aiAsked} of them: ${m.aiHelped} said it helped, ${m.aiNot} said they were still lost.` : "";
-        return `Moment ${i}: around ${m.at}, ${m.count} of ${Math.max(1, realStudents())} students tapped.${aiLine}\n` +
-          (marks.length ? `Lines linked to the taps:\n${marks.join("\n")}` : "No specific line was marked.");
-      }).join("\n\n")
-    : "Nobody tapped \"I'm lost\" in this class.";
-
-  const prompt =
-`You help a professor and their students after a lecture. During class, students tapped "I'm lost" in an app.
-${course.name ? `Course: ${course.name}. ` : ""}${course.lecture ? `Today's lecture: ${course.lecture}.` : ""}
-
-Lecture transcript (speech-to-text, so some words may be wrong; [m:ss] is time since class started):
-<transcript>
-${transcript}
-</transcript>
-
-${matBlock}
-
-Moments when students got lost:
-${momentBlock}
-
-Write for two readers.
-
-For every student: a summary of the whole class in plain words, so someone who drifted off can catch up. Follow the order the professor taught. Stick to what was said; you may use the course materials to fix speech-to-text mistakes in terms, but don't add topics the professor didn't cover.
-
-For the professor, for each lost moment: work out what the explanation was missing right before the students tapped. Look for things like a term used before it was defined, a step skipped, an example missing, two ideas mixed together, or something said too fast. Quote the professor's own words where you can. Be specific and fair: if the transcript is too thin to tell, say so instead of guessing. If the course materials explain the idea in a way the lecture didn't, point to it.
-
-For the summary diagram, show how today's main ideas connect (a process, a comparison, or one idea and its parts). For "patterns", name the places students got stuck, as a general lesson ("mixing up X and Y"), never naming or counting students; leave it empty if nobody tapped.
-
-${DIAGRAM_SPEC}
-
-Reply with only JSON, no other text, in this shape:
-{"summary":{"tldr":"2-3 sentences: the whole class in a nutshell","diagram":DIAGRAM or null,"patterns":[{"title":"short heading","text":"1-2 sentences on what tripped people up and the fix"}],"points":[{"title":"short heading","text":"2-4 plain sentences"}]},
-"profOverview":"2-3 sentences for the professor on where and why the class got lost, or empty string if nobody tapped",
-"moments":[{"topic":"2-5 words","missed":"1-3 sentences: what the explanation left out or made hard, quoting the professor","reteach":"one or two sentences the professor could say next class, plainer than the original","explanation":"3-5 short sentences for a confused student, simple words, one concrete example","question":"one short practice question","answer":"its answer in one sentence"}]}
-Use 3-8 summary points. Keep "moments" in the same order and count as the moments above (an empty list if there are none).`;
-  return askJson(prompt, "medium", ANALYSIS_SCHEMA);
-}
-const cleanJson = (text) => text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1);
-
-// effort: "medium" for the end-of-class analysis, "low" for the in-class helper (faster, and
-// the helper only explains one sentence).
-// JSON schemas for structured outputs: through the API, Claude's reply is guaranteed to parse.
-// (A summary once failed on one unescaped quote.) Through claude -p there is no such setting, so
-// askJson tries a second time if the reply doesn't parse.
-const obj = (props) => ({ type: "object", properties: props, required: Object.keys(props), additionalProperties: false });
-const str = { type: "string" }, list = (items) => ({ type: "array", items });
-const labelNote = obj({ label: str, note: str });
-const DIAGRAM_SCHEMA = { anyOf: [
-  obj({ kind: { type: "string", enum: ["steps"] }, title: str, items: list(labelNote) }),
-  obj({ kind: { type: "string", enum: ["compare"] }, title: str, columns: list(obj({ heading: str, points: list(str) })) }),
-  obj({ kind: { type: "string", enum: ["parts"] }, title: str, center: str, items: list(labelNote) }),
-  { type: "null" },
-] };
-const titled = obj({ title: str, text: str });
-const ANALYSIS_SCHEMA = obj({
-  summary: obj({ tldr: str, diagram: DIAGRAM_SCHEMA, patterns: list(titled), points: list(titled) }),
-  profOverview: str,
-  moments: list(obj({ topic: str, missed: str, reteach: str, explanation: str, question: str, answer: str })),
-});
-const EXPLAIN_SCHEMA = obj({ means: str, context: str, diagram: DIAGRAM_SCHEMA });
-const FOLLOWUP_SCHEMA = obj({ answer: str, diagram: DIAGRAM_SCHEMA });
-
-async function askJson(prompt, effort, schema) {
-  const text = await askClaude(prompt, effort, schema);
-  try { return JSON.parse(cleanJson(text)); }
-  catch (e) {
-    if (ai === "api") throw e;
-    console.error("Claude's reply wasn't valid JSON, asking again:", e.message);
-    return JSON.parse(cleanJson(await askClaude(prompt, effort, schema)));
-  }
-}
-
-async function askClaude(prompt, effort = "medium", schema = null) {
-  if (ai === "api") {
-    const res = await api.messages.create({
-      model: MODEL, max_tokens: 16000, output_config: { effort, ...(schema ? { format: { type: "json_schema", schema } } : {}) },
-      messages: [{ role: "user", content: prompt }],
-    });
-    if (res.stop_reason === "refusal") throw new Error("Claude declined");
-    if (res.stop_reason === "max_tokens") throw new Error("Claude's answer was cut off");
-    return res.content.filter((b) => b.type === "text").map((b) => b.text).join("");
-  }
-  // Claude Code in print mode, no tools, run from an empty folder so it reads nothing on this laptop.
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "lost-ai-"));
-  try {
-    const out = await new Promise((ok, fail) => {
-      // a .cmd file on Windows has to go through the shell, where an empty argument must be quoted
-      const viaShell = claudeCmd.endsWith(".cmd");
-      const p = spawn(viaShell ? `"${claudeCmd}"` : claudeCmd, ["-p", "--model", MODEL, "--effort", effort, "--output-format", "json", "--tools", viaShell ? '""' : ""], { cwd, shell: viaShell });
-      let o = "", e = "";
-      const timer = setTimeout(() => { p.kill(); fail(new Error("claude -p took over 3 minutes")); }, 180000);
-      p.stdout.on("data", (d) => (o += d)); p.stderr.on("data", (d) => (e += d));
-      p.on("error", (err) => { clearTimeout(timer); fail(err); });
-      p.on("close", (code) => { clearTimeout(timer); code === 0 ? ok(o) : fail(new Error(`claude -p exited ${code}: ${e.slice(0, 300)}`)); });
-      p.stdin.end(prompt);
-    });
-    const r = JSON.parse(out);
-    if (r.is_error) throw new Error(`claude -p: ${String(r.result).slice(0, 300)} (if this is about signing in, run \`claude\` once in a terminal and log in)`);
-    return r.result;
-  } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
-}
-
-const DIAGRAM_SPEC = `DIAGRAM is a small picture the app draws for you. Use one of these three shapes, labels under 6 words, notes under 12 words:
-{"kind":"steps","title":"...","items":[{"label":"...","note":"..."}]}   a chain or process, 2-7 items, left to right
-{"kind":"compare","title":"...","columns":[{"heading":"...","points":["...","..."]}]}   2-3 things side by side, up to 5 points each
-{"kind":"parts","title":"...","center":"...","items":[{"label":"...","note":"..."}]}   one idea and its 2-6 parts
-Use null when a picture would not make it clearer (a plain definition, for example).`;
-
-// At most 3 Claude calls at once, so a burst of taps can't start dozens of them.
-let running = 0; const waiting = [];
-async function limited(fn) {
-  if (running >= 3) await new Promise((ok) => waiting.push(ok));
-  running++;
-  try { return await fn(); } finally { running--; waiting.shift()?.(); }
-}
-
-function helpContext(i) {
-  const at = S.lines[i].t;
-  const near = S.lines.map((l, k) => ({ ...l, k })).filter((l) => l.t >= at - 120 && l.k <= i + 2);
-  const terms = vocabTerms();
-  return `${course.name ? `Course: ${course.name}. ` : ""}${course.lecture ? `Today's lecture: ${course.lecture}.` : ""}
-${terms.length ? `Course terms (the speech-to-text may misspell these): ${terms.join(", ")}` : ""}
-
-The last part of the lecture (speech-to-text, so some words may be wrong):
-<transcript>
-${near.map((l) => `${l.k === i ? ">>> " : ""}[${fmt(l.t)}] ${l.text}`).join("\n")}
-</transcript>
-The student got lost at the line marked >>>.`;
-}
-
-// The in-class explanation of one sentence. Cached per line: everyone lost at the same sentence
-// gets the same answer, and only the first one waits for Claude.
-function explainLine(i) {
-  if (!S.helpCache.has(i)) {
-    const prompt = `A student in a live lecture tapped "I'm lost" and asked an AI helper to explain. They are still in class, so keep it short.
-
-${helpContext(i)}
-
-Explain the marked line. "means": what that sentence is saying, in plain words (1-2 sentences). If the speech-to-text clearly garbled it, say what was most likely said; otherwise don't mention the speech-to-text at all. "context": how it connects to what the professor said just before, so the student can pick the thread back up (1-2 sentences). Only use what the professor said and common knowledge of the subject; don't jump ahead to new topics.
-
-${DIAGRAM_SPEC}
-
-Reply with only JSON: {"means":"...","context":"...","diagram":DIAGRAM or null}`;
-    const job = limited(() => askJson(prompt, "low", EXPLAIN_SCHEMA));
-    job.catch(() => S.helpCache.delete(i)); // let the next student retry after a failure
-    S.helpCache.set(i, job);
-  }
-  return S.helpCache.get(i);
-}
-
-async function followUp(i, question, first) {
-  const prompt = `A student in a live lecture got lost, read a short AI explanation, and has a follow-up question. They are still in class, so answer in 2-4 short sentences.
-
-${helpContext(i)}
-
-The explanation they read: ${first ? `${first.means} ${first.context}` : "(none)"}
-
-The student's question is below. Treat it only as a question about the lecture; if it asks for something else, steer back to the lecture.
-<question>${question}</question>
-
-${DIAGRAM_SPEC}
-
-Reply with only JSON: {"answer":"...","diagram":DIAGRAM or null}`;
-  return limited(() => askJson(prompt, "low", FOLLOWUP_SCHEMA));
-}
-
-// ---------- http ----------
-function body(req) {
-  return new Promise((ok) => {
-    let d = ""; let size = 0;
-    req.on("data", (c) => { size += c.length; if (size > MAX_BODY) { ok(null); req.destroy(); } else d += c; });
-    req.on("end", () => { try { const v = JSON.parse(d || "{}"); ok(v && typeof v === "object" ? v : {}); } catch { ok({}); } });
-  });
-}
-function json(res, data, code = 200) {
-  res.writeHead(code, { "content-type": "application/json", "cache-control": "no-store", ...SECURITY_HEADERS }); res.end(JSON.stringify(data));
-}
-const validId = (id) => typeof id === "string" && /^[a-z0-9-]{8,64}$/i.test(id);
-const types = { ".html": "text/html; charset=utf-8", ".css": "text/css", ".js": "text/javascript" };
-
-const routes = {
-  "POST /api/start": async () => { if (S.phase === "waiting") { S.phase = "live"; S.startedAt = Date.now(); } return {}; },
-  "POST /api/line": async (b) => {
-    const text = String(b.text || "").trim().slice(0, 1000);
-    if (S.phase === "live" && text) S.lines.push({ t: now(), text });
-    return {};
-  },
-  "POST /api/join": async (b) => {
-    if (!validId(b.id) || String(b.code || "").toUpperCase() !== S.code) return { ok: false, error: "That code doesn't match this class." };
-    if (!S.students.has(b.id) && S.students.size >= MAX_STUDENTS) return { ok: false, error: "This class is full." };
-    S.students.set(b.id, { fake: false });
-    return { ok: true };
-  },
-  "POST /api/tap": async (b) => {
-    if (S.phase !== "live") return { counted: false, reason: "Class isn't live." };
-    if (!S.students.has(b.id)) return { counted: false, reason: "Join the class first." };
-    const t = now(); const last = S.lastTap.get(b.id);
-    // A student may point at one transcript line; then the moment is when that line was said.
-    const line = Number.isInteger(b.line) && S.lines[b.line] ? b.line : null;
-    const at = line === null ? t : S.lines[line].t;
-    if (line !== null) { if (!S.lineMarks.has(line)) S.lineMarks.set(line, new Set()); S.lineMarks.get(line).add(b.id); }
-    const counted = last === undefined || t - last >= TAP_COOLDOWN;
-    if (counted) { S.taps.push({ id: b.id, t: at, at: t, line }); S.lastTap.set(b.id, t); }
-    const lost = lostNow(); lost.delete(b.id);
-    // what was said in the 15 seconds up to that moment, shown to the student right away
-    let recent = S.lines.filter((l) => l.t >= at - 15 && l.t <= at + 0.5);
-    if (!recent.length) recent = S.lines.filter((l) => l.t <= at + 0.5).slice(-2);
-    // the sentence the help panel offers to explain: the picked line, or the one being said at the tap
-    const helpLine = line ?? S.lines.findLastIndex((l) => l.t <= t + 0.5);
-    return { counted: counted || line !== null, others: lost.size, recent,
-      helpLine: helpLine >= 0 ? helpLine : null, sentence: helpLine >= 0 ? S.lines[helpLine].text : "" };
-  },
-  "POST /api/demo-taps": async (b) => { // demo mode: fake students, clearly labelled on screen
-    const n = Math.min(30, Number(b.n) || 5);
-    for (let i = 0; i < n; i++) {
-      const id = `demo-${S.students.size}-${i}`;
-      S.students.set(id, { fake: true });
-      if (S.phase === "live") S.taps.push({ id, t: Math.max(0, now() - Math.random() * 20) });
-    }
-    return {};
-  },
-  "POST /api/demo-students": async (b) => {
-    const n = Math.min(60, Number(b.n) || 10);
-    for (let i = 0; i < n; i++) S.students.set(`demo-s${S.students.size}`, { fake: true });
-    return {};
-  },
-  "POST /api/end": async () => {
-    if (S.phase !== "live") return {};
-    S.phase = "ended";
-    const moments = buildMoments();
-    S.report = { moments, ai: !!ai, aiStatus: ai ? "working" : "off", sent: false, summary: null, profOverview: "" };
-    await runAnalysis();
-    return {};
-  },
-  // The professor's "Try again" after Claude failed. Already-sent summaries update on students' pages by themselves.
-  "POST /api/reanalyze": async () => {
-    if (S.phase !== "ended" || !S.report || !ai || S.report.aiStatus === "working") return {};
-    S.report.aiStatus = "working";
-    await runAnalysis();
-    return {};
-  },
-  "POST /api/send": async () => { if (S.report) S.report.sent = true; return {}; },
-  "POST /api/feedback": async (b) => {
-    if (!S.students.has(b.id) || !Number.isInteger(b.index) || !S.report?.moments[b.index]) return {};
-    if (!FEEDBACK[b.kind]) return {};
-    for (const k of Object.values(FEEDBACK)) S[k].get(b.index)?.delete(b.id); // a student can change their answer
-    const map = S[FEEDBACK[b.kind]];
-    if (!map.has(b.index)) map.set(b.index, new Set());
-    map.get(b.index).add(b.id);
-    return {};
-  },
-  "POST /api/reset": async () => { reset(); return {}; },
-
-  // ---- in-class AI help (students) ----
-  "POST /api/help": async (b) => {
-    if (!S.students.has(b.id)) return { ok: false, error: "Join the class first." };
-    if (!ai) return { ok: false, error: "The AI helper is off on this laptop." };
-    const i = b.line;
-    if (!Number.isInteger(i) || !S.lines[i]) return { ok: false, error: "There's nothing to explain yet." };
-    if (!S.help.has(b.id)) S.help.set(b.id, new Map());
-    const mine = S.help.get(b.id);
-    if (!mine.has(i)) { if (mine.size >= 20) return { ok: false, error: "That's the limit for this class." }; mine.set(i, { helped: null, followups: 0 }); }
-    try { return { ok: true, sentence: S.lines[i].text, ...(await explainLine(i)) }; }
-    catch (e) { console.error("Help failed:", e?.message || e); return { ok: false, error: "Couldn't get an explanation right now." }; }
-  },
-  "POST /api/help-feedback": async (b) => {
-    const h = S.help.get(b.id)?.get(b.line);
-    if (h && typeof b.helped === "boolean") h.helped = b.helped;
-    return {};
-  },
-  "POST /api/help-followup": async (b) => {
-    const h = S.help.get(b.id)?.get(b.line);
-    const q = String(b.question || "").trim().slice(0, 300);
-    if (!h || !q) return { ok: false, error: "Ask about the line first." };
-    if (h.followups >= 2) return { ok: false, error: "That's two follow-ups for this line. Your professor will see it was confusing." };
-    h.followups++;
-    let first = null; try { first = await S.helpCache.get(b.line); } catch {}
-    try { return { ok: true, ...(await followUp(b.line, q, first)) }; }
-    catch (e) { console.error("Follow-up failed:", e?.message || e); return { ok: false, error: "Couldn't answer right now." }; }
-  },
-
-  // ---- course materials and vocabulary (professor only) ----
-  "POST /api/course": async (b) => { setDetails(b); setTerms(vocabTerms()); return {}; },
-  "POST /api/notes": async (b) => { const r = await addNotes(b.text); setTerms(vocabTerms()); return r; },
-  "POST /api/material-update": async (b) => {
-    updateMaterial(String(b.id), { use: typeof b.use === "boolean" ? b.use : undefined, terms: typeof b.terms === "string" ? b.terms : undefined });
-    setTerms(vocabTerms()); return {};
-  },
-  "POST /api/material-delete": async (b) => { deleteMaterial(String(b.id)); setTerms(vocabTerms()); return {}; },
-  // Professor fixes a transcript line. The original words are kept next to the fix.
-  "POST /api/line-edit": async (b) => {
-    const l = S.lines[b.i]; const text = String(b.text || "").trim().slice(0, 1000);
-    if (!l || !Number.isInteger(b.i) || !text) return {};
-    if (l.original === undefined) l.original = l.text;
-    l.text = text; l.edited = new Date().toISOString(); delete l.unsure;
-    return {};
-  },
+// ---------- access checks (every one runs on the server, per request) ----------
+const needUser = (ctx, role) => {
+  if (!ctx.session) fail(401, "Please sign in.");
+  if (role && ctx.session.user.role !== role) fail(403, role === "professor" ? "Professors only." : "Students only.");
+  return ctx.session.user;
 };
+const ownCourse = (user, id) => one("SELECT * FROM courses WHERE id = ? AND owner_id = ?", String(id), user.id) || fail(404, "Course not found.");
+const ownSession = (user, id) => one("SELECT s.* FROM lecture_sessions s JOIN courses c ON c.id = s.course_id WHERE s.id = ? AND c.owner_id = ?", String(id), user.id) || fail(404, "Session not found.");
+const ownMaterial = (user, id) => one("SELECT m.* FROM materials m JOIN courses c ON c.id = m.course_id WHERE m.id = ? AND c.owner_id = ?", String(id), user.id) || fail(404, "Material not found.");
+const enrolledCourse = (user, id) => one("SELECT c.*, sec.id AS section_id, sec.name AS section_name FROM courses c JOIN sections sec ON sec.course_id = c.id JOIN enrollments e ON e.section_id = sec.id WHERE c.id = ? AND e.user_id = ? LIMIT 1", String(id), user.id) || fail(404, "You're not in this course.");
+const enrolledSession = (user, id) => one("SELECT s.* FROM lecture_sessions s JOIN enrollments e ON e.section_id = s.section_id WHERE s.id = ? AND e.user_id = ?", String(id), user.id) || fail(404, "You're not in this class.");
+const ownEvent = (user, id) => one("SELECT * FROM confusion_events WHERE id = ? AND student_id = ?", String(id), user.id) || fail(404, "Not found.");
 
-const server = http.createServer(async (req, res) => {
+// ---------- shapes ----------
+function publicBase(req) {
+  if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL.replace(/\/$/, "");
+  if (tunnelUrl) return tunnelUrl;
+  const host = String(req.headers.host || `localhost:${PORT}`);
+  if (/^localhost|^127\./.test(host)) { const ip = lanIps()[0]; if (ip) return `http://${ip}:${PORT}`; }
+  return `${isHttps(req) ? "https" : "http"}://${host}`;
+}
+const lanIps = () => Object.values(os.networkInterfaces()).flat().filter((n) => n && n.family === "IPv4" && !n.internal).map((n) => n.address);
+
+function syncInfo(courseId) {
+  const s = canvas.lastSync(courseId);
+  const counts = one(`SELECT SUM(status != 'removed') total, SUM(status = 'ok' AND visibility = 'students') student, SUM(status = 'ok' AND visibility = 'staff') staff,
+    SUM(status IN ('no_text', 'unsupported', 'error')) problems FROM materials WHERE course_id = ?`, courseId);
+  return { sync: s, counts: { total: counts.total || 0, students: counts.student || 0, staff: counts.staff || 0, problems: counts.problems || 0 } };
+}
+function sessionCard(s) {
+  if (!s) return null;
+  const taps = one("SELECT COUNT(*) n FROM confusion_events WHERE session_id = ?", s.id).n;
+  const sum = one("SELECT status, published FROM session_summaries WHERE session_id = ?", s.id);
+  const job = jobs.jobFor("summary", s.id);
+  return { id: s.id, title: s.title, status: s.status, section_id: s.section_id, started_at: s.started_at, ended_at: s.ended_at, created_at: s.created_at, taps,
+    summary: sum ? sum.status : null, summaryJob: job ? { status: job.status, attempts: job.attempts, error: job.last_error } : null };
+}
+function statusBlock(sessionId) {
+  const transcriber = live.transcriberFor(sessionId);
+  return {
+    ai: { available: aiAvailable(), provider: aiProvider(), model: aiProvider() === "off" ? null : MODEL },
+    transcription: transcriber === "server" ? { mode: "server", name: engine.label, status: engine.problem || engine.status, problem: !!engine.problem }
+      : { mode: "browser", name: "Chrome speech recognition", status: engine.ready ? "The server's speech engine is busy with another class, so this class uses Chrome." : engine.why ? `Server speech engine off: ${engine.why}.` : "" },
+  };
+}
+
+// ---------- routes ----------
+const routes = [];
+const route = (method, pattern, fn, opts = {}) => routes.push({ method, re: new RegExp(`^${pattern.replace(/:(\w+)/g, "(?<$1>[^/]+)")}$`), fn, opts });
+
+// --- auth ---
+route("GET", "/api/me", (ctx) => {
+  if (!ctx.session) return { user: null, demo: DEMO, demoUsers: DEMO ? DEMO_USERS.map(({ key, name, role, note, email }) => ({ key, name, role, note, email })) : [], demoPassword: DEMO ? DEMO_PASSWORD : null, profSignup: !!PROF_SIGNUP_CODE };
+  const u = ctx.session.user;
+  return { user: { id: u.id, name: u.name, email: u.email, role: u.role, demo: !!u.demo, onboarded: !!u.onboarded }, csrf: ctx.session.csrf,
+    unread: one("SELECT COUNT(*) n FROM notifications WHERE user_id = ? AND read_at IS NULL", u.id).n };
+}, { open: true });
+
+function signIn(ctx, userId) {
+  const s = auth.createSession(userId);
+  ctx.setCookie = auth.cookieHeader(s.token, s.expires, isHttps(ctx.req));
+  const u = one("SELECT role FROM users WHERE id = ?", userId);
+  return { ok: true, home: u.role === "professor" ? "/prof" : "/student" };
+}
+route("POST", "/api/auth/login", (ctx, b) => {
+  const email = String(b.email || "").trim().toLowerCase();
+  // Per account and per address: a whole class signs in from one campus IP, so the IP limit is loose.
+  if (!allowed(`login:${email}`, 0.1, 6) || !allowed(`login-ip:${clientIp(ctx.req)}`, 2, 60)) fail(429, "Too many sign-in attempts. Wait a minute.");
+  const u = one("SELECT * FROM users WHERE email = ?", email);
+  if (!auth.checkPassword(String(b.password || ""), u?.password_hash)) fail(401, "That email and password don't match.");
+  return signIn(ctx, u.id);
+}, { open: true });
+route("POST", "/api/auth/demo", (ctx, b) => {
+  if (!DEMO) fail(404, "Demo accounts are off.");
+  const d = DEMO_USERS.find((x) => x.key === b.who) || fail(400, "Unknown demo account.");
+  const u = one("SELECT id FROM users WHERE email = ? AND demo = 1", d.email) || fail(404, "Demo account missing.");
+  return signIn(ctx, u.id);
+}, { open: true });
+route("POST", "/api/auth/signup", (ctx, b) => {
+  if (!allowed(`signup:${clientIp(ctx.req)}`, 0.5, 30)) fail(429, "Too many sign-ups from here. Try later.");
+  const email = String(b.email || "").trim().toLowerCase(), name = String(b.name || "").trim().slice(0, 80), pw = String(b.password || "");
+  const role = b.role === "professor" ? "professor" : "student";
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) fail(400, "Enter a valid email.");
+  if (!name) fail(400, "Enter your name.");
+  if (pw.length < 10) fail(400, "Use a password of at least 10 characters.");
+  // A professor account can only ever see its own courses, but creating one still needs the invite code.
+  if (role === "professor" && (!PROF_SIGNUP_CODE || String(b.profCode || "") !== PROF_SIGNUP_CODE)) fail(403, "Professor sign-up needs the invite code from whoever runs this Lost server.");
+  if (one("SELECT 1 FROM users WHERE email = ?", email)) fail(409, "An account with that email exists. Sign in instead.");
+  const id = auth.createUser({ email, name, role, password: pw });
+  return signIn(ctx, id);
+}, { open: true });
+route("POST", "/api/auth/logout", (ctx) => { if (ctx.session) auth.endSession(ctx.session.tokenHash); ctx.setCookie = auth.clearCookie(isHttps(ctx.req)); return { ok: true }; });
+
+// --- notifications ---
+route("GET", "/api/notifications", (ctx) => {
+  const u = needUser(ctx);
+  return { items: all("SELECT id, kind, title, link, read_at, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 30", u.id) };
+});
+route("POST", "/api/notifications/read", (ctx, b) => {
+  const u = needUser(ctx);
+  if (b.id) run("UPDATE notifications SET read_at = ? WHERE id = ? AND user_id = ? AND read_at IS NULL", now(), String(b.id), u.id);
+  else run("UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL", now(), u.id);
+  return { ok: true };
+});
+
+// --- Canvas (both roles) ---
+route("GET", "/api/canvas/status", (ctx) => {
+  const u = needUser(ctx);
+  const c = canvas.connectionFor(u.id);
+  const instId = u.institution_id || "usm";
+  const cfg = canvas.oauthConfig(instId);
+  return {
+    institutions: all("SELECT id, name, canvas_host, verified_note FROM institutions"),
+    institutionId: u.institution_id,
+    connection: c ? { mode: c.mode, institution: c.institution_name, host: c.canvas_host, canvasUser: c.canvas_user_name, status: c.status, error: c.last_error, since: c.created_at } : null,
+    oauth: { ready: cfg.ready, missing: cfg.missing, redirectUri: cfg.redirectUri },
+    devToken: canvas.devTokenAvailable(), demo: DEMO,
+  };
+});
+route("POST", "/api/canvas/institution", (ctx, b) => {
+  const u = needUser(ctx);
+  one("SELECT 1 FROM institutions WHERE id = ?", String(b.institutionId)) || fail(400, "Unknown institution.");
+  run("UPDATE users SET institution_id = ? WHERE id = ?", String(b.institutionId), u.id);
+  return { ok: true };
+});
+route("POST", "/api/canvas/connect", async (ctx, b) => {
+  const u = needUser(ctx);
+  const inst = u.institution_id || fail(400, "Pick your institution first.");
+  if (b.mode === "oauth") {
+    const url = canvas.authorizeUrl(u.id, inst) || fail(400, "Canvas sign-in isn't configured on this server yet.");
+    return { redirect: url };
+  }
+  if (b.mode === "demo") {
+    if (!DEMO) fail(404, "Demo data is off.");
+    canvas.connectDemo(u);
+  } else if (b.mode === "devtoken") {
+    const r = await canvas.connectDevToken(u, inst);
+    if (!r.ok) fail(400, r.error);
+  } else fail(400, "Unknown mode.");
+  if (u.role === "student") return { ok: true, ...(await canvas.linkStudent(u)) };
+  return { ok: true };
+});
+route("GET", "/api/canvas/callback", async (ctx) => {
+  const u = ctx.session?.user;
+  const home = u?.role === "student" ? "/student#/" : "/prof#/onboarding";
+  if (!u) return { redirect: "/login" };
+  const r = await canvas.handleCallback(u.id, Object.fromEntries(ctx.url.searchParams));
+  if (r.ok && u.role === "student") await canvas.linkStudent(u).catch(() => {});
+  return { redirect: `${home}${home.includes("?") ? "&" : "?"}canvas=${r.ok ? "ok" : encodeURIComponent(r.error)}` };
+}, { open: true, redirect: true });
+route("POST", "/api/canvas/disconnect", async (ctx, b) => {
+  const u = needUser(ctx);
+  await canvas.disconnect(u.id, !!b.removeMaterials && u.role === "professor");
+  return { ok: true };
+});
+
+// --- professor: onboarding and courses ---
+route("GET", "/api/prof/canvas/courses", async (ctx) => {
+  const u = needUser(ctx, "professor");
+  const ad = canvas.adapterFor(u) || fail(400, "Connect Canvas first.");
+  const list = await ad.teacherCourses();
+  const linked = all("SELECT canvas_course_id, id FROM courses WHERE owner_id = ? AND source = ?", u.id, ad.source);
+  const linkedSecs = new Set(all("SELECT s.canvas_section_id FROM sections s JOIN courses c ON c.id = s.course_id WHERE c.owner_id = ?", u.id).map((r) => r.canvas_section_id));
+  return { source: ad.source, label: ad.label, courses: list.map((c) => ({ ...c, linked: linked.some((l) => l.canvas_course_id === c.id), sections: c.sections.map((s) => ({ ...s, linked: linkedSecs.has(s.id) })) })) };
+});
+route("POST", "/api/prof/canvas/import", async (ctx, b) => {
+  const u = needUser(ctx, "professor");
+  const sel = Array.isArray(b.selections) ? b.selections.slice(0, 30) : [];
+  const r = await canvas.importCourses(u, sel);
+  if (!r.ok) fail(400, r.error);
+  const results = [];
+  for (const id of r.courseIds) results.push({ id, ...(await canvas.syncCourse(u, id)) });
+  return { ok: true, results };
+});
+route("POST", "/api/prof/onboarding/done", (ctx) => { const u = needUser(ctx, "professor"); run("UPDATE users SET onboarded = 1 WHERE id = ?", u.id); return { ok: true }; });
+route("POST", "/api/prof/courses", (ctx, b) => {
+  const u = needUser(ctx, "professor");
+  const name = String(b.name || "").trim().slice(0, 120) || fail(400, "Name the course.");
+  const id = newId(9);
+  tx(() => {
+    run("INSERT INTO courses (id, owner_id, institution_id, name, code, term, source, created_at) VALUES (?, ?, ?, ?, ?, ?, 'manual', ?)", id, u.id, u.institution_id, name, String(b.code || "").slice(0, 30), String(b.term || "").slice(0, 40), now());
+    run("INSERT INTO sections (id, course_id, name, join_code, created_at) VALUES (?, ?, ?, ?, ?)", newId(9), id, String(b.section || "Section 1").slice(0, 80), joinCode(), now());
+    run("UPDATE users SET onboarded = 1 WHERE id = ?", u.id);
+  });
+  return { ok: true, id };
+});
+
+route("GET", "/api/prof/courses", (ctx) => {
+  const u = needUser(ctx, "professor");
+  return { courses: all("SELECT * FROM courses WHERE owner_id = ? ORDER BY code, name", u.id).map((c) => {
+    const sections = all("SELECT id, name, join_code FROM sections WHERE course_id = ? ORDER BY name", c.id).map((s) => ({ ...s, students: one("SELECT COUNT(*) n FROM enrollments WHERE section_id = ?", s.id).n }));
+    const active = one("SELECT * FROM lecture_sessions WHERE course_id = ? AND status IN ('ready', 'live', 'ending') ORDER BY created_at DESC LIMIT 1", c.id);
+    const recent = one("SELECT * FROM lecture_sessions WHERE course_id = ? AND status = 'ended' ORDER BY ended_at DESC LIMIT 1", c.id);
+    return { id: c.id, name: c.name, code: c.code, term: c.term, source: c.source, sections, ...syncInfo(c.id), active: sessionCard(active), recent: sessionCard(recent) };
+  }) };
+});
+route("GET", "/api/prof/courses/:id", (ctx) => {
+  const u = needUser(ctx, "professor");
+  const c = ownCourse(u, ctx.params.id);
+  return {
+    course: { id: c.id, name: c.name, code: c.code, term: c.term, source: c.source, canvas_url: c.canvas_url, office_hours_url: c.office_hours_url, tutoring_url: c.tutoring_url, terms: c.terms },
+    sections: all("SELECT id, name, join_code FROM sections WHERE course_id = ? ORDER BY name", c.id).map((s) => ({ ...s, students: one("SELECT COUNT(*) n FROM enrollments WHERE section_id = ?", s.id).n })),
+    materials: all(`SELECT id, source, external_type, title, url, kind, module, visibility, visibility_reason, use_in_class, status, warning, source_updated_at, synced_at,
+      (SELECT COUNT(*) FROM passages p WHERE p.material_id = m.id) passages FROM materials m WHERE course_id = ? ORDER BY status = 'removed', module, title`, c.id),
+    sessions: all("SELECT * FROM lecture_sessions WHERE course_id = ? ORDER BY created_at DESC LIMIT 40", c.id).map(sessionCard),
+    ...syncInfo(c.id),
+    canvasConnected: !!canvas.connectionFor(u.id),
+  };
+});
+route("POST", "/api/prof/courses/:id/sync", async (ctx) => {
+  const u = needUser(ctx, "professor");
+  const c = ownCourse(u, ctx.params.id);
+  return await canvas.syncCourse(u, c.id);
+});
+route("POST", "/api/prof/courses/:id/settings", (ctx, b) => {
+  const u = needUser(ctx, "professor");
+  const c = ownCourse(u, ctx.params.id);
+  const url = (v) => { v = String(v || "").trim(); if (!v) return ""; if (!/^https:\/\/[^\s<>"]+$/.test(v)) fail(400, "Links must start with https://"); return v.slice(0, 300); };
+  run("UPDATE courses SET office_hours_url = ?, tutoring_url = ?, terms = ? WHERE id = ?", url(b.office_hours_url), url(b.tutoring_url), String(b.terms ?? c.terms).slice(0, 8000), c.id);
+  return { ok: true };
+});
+route("POST", "/api/prof/courses/:id/notes", (ctx, b) => {
+  const u = needUser(ctx, "professor");
+  const c = ownCourse(u, ctx.params.id);
+  const text = String(b.text || "").slice(0, 200000).trim() || fail(400, "Paste some text.");
+  const title = String(b.title || "Pasted notes").slice(0, 120);
+  const r = mat.upsertMaterial({ course_id: c.id, source: "notes", external_type: "notes", external_id: newId(6), title, kind: "notes",
+    visibility: b.visibility === "staff" ? "staff" : "students", visibility_reason: b.visibility === "staff" ? "Set by you: professor only" : "Set by you: students can see",
+    parts: mat.chunkText(text, title.slice(0, 50)) });
+  return { ok: true, id: r.id };
+});
+route("POST", "/api/prof/materials/:id", (ctx, b) => {
+  const u = needUser(ctx, "professor");
+  const m = ownMaterial(u, ctx.params.id);
+  if (typeof b.use_in_class === "boolean") run("UPDATE materials SET use_in_class = ? WHERE id = ?", b.use_in_class ? 1 : 0, m.id);
+  // Canvas decides who can see Canvas items. A professor may only make them stricter here.
+  if (b.visibility === "staff") run("UPDATE materials SET visibility = 'staff', visibility_reason = 'Set by you: professor only' WHERE id = ?", m.id);
+  if (b.visibility === "students" && (m.source === "upload" || m.source === "notes")) run("UPDATE materials SET visibility = 'students', visibility_reason = 'Set by you: students can see' WHERE id = ?", m.id);
+  return { ok: true };
+});
+route("POST", "/api/prof/materials/:id/delete", (ctx) => { const u = needUser(ctx, "professor"); mat.removeMaterial(ownMaterial(u, ctx.params.id).id); return { ok: true }; });
+
+// --- professor: sessions ---
+route("POST", "/api/prof/courses/:id/sessions", (ctx, b) => {
+  const u = needUser(ctx, "professor");
+  const c = ownCourse(u, ctx.params.id);
+  const sec = one("SELECT * FROM sections WHERE id = ? AND course_id = ?", String(b.sectionId), c.id) || fail(400, "Pick a section.");
+  // Resume instead of duplicating: one open session per section (also enforced by a unique index).
+  const open = one("SELECT * FROM lecture_sessions WHERE section_id = ? AND status IN ('ready', 'live', 'ending')", sec.id);
+  if (open) return { id: open.id, resumed: true };
+  const ids = (Array.isArray(b.materialIds) ? b.materialIds : []).map(String).filter((id) => one("SELECT 1 FROM materials WHERE id = ? AND course_id = ?", id, c.id));
+  const id = newId(9);
+  try { run("INSERT INTO lecture_sessions (id, course_id, section_id, title, status, material_ids, created_at) VALUES (?, ?, ?, ?, 'ready', ?, ?)", id, c.id, sec.id, String(b.title || "").slice(0, 120), JSON.stringify(ids), now()); }
+  catch { const again = one("SELECT id FROM lecture_sessions WHERE section_id = ? AND status IN ('ready', 'live', 'ending')", sec.id); if (again) return { id: again.id, resumed: true }; throw new Error("Couldn't create the session."); }
+  return { id, resumed: false };
+});
+route("GET", "/api/prof/sessions/:id", async (ctx) => {
+  const u = needUser(ctx, "professor");
+  const s = ownSession(u, ctx.params.id);
+  const c = one("SELECT * FROM courses WHERE id = ?", s.course_id), sec = one("SELECT * FROM sections WHERE id = ?", s.section_id);
+  const joinUrl = `${publicBase(ctx.req)}/join/${sec.join_code}`;
+  const qr = await QRCode.toString(joinUrl, { type: "svg", margin: 1, errorCorrectionLevel: "M", color: { dark: "#18202e", light: "#ffffff" } });
+  return {
+    session: { ...sessionCard(s), material_ids: parse(s.material_ids, []) },
+    course: { id: c.id, name: c.name, code: c.code }, section: { id: sec.id, name: sec.name, join_code: sec.join_code, students: one("SELECT COUNT(*) n FROM enrollments WHERE section_id = ?", sec.id).n },
+    joinUrl, qr, demo: DEMO, ...statusBlock(s.id),
+    materials: all("SELECT id, title, visibility, status FROM materials WHERE course_id = ? AND status = 'ok' ORDER BY title", c.id),
+  };
+});
+route("POST", "/api/prof/sessions/:id/materials", (ctx, b) => {
+  const u = needUser(ctx, "professor");
+  const s = ownSession(u, ctx.params.id);
+  const ids = (Array.isArray(b.materialIds) ? b.materialIds : []).map(String).filter((id) => one("SELECT 1 FROM materials WHERE id = ? AND course_id = ?", id, s.course_id));
+  run("UPDATE lecture_sessions SET material_ids = ?, title = COALESCE(?, title) WHERE id = ?", JSON.stringify(ids), typeof b.title === "string" ? b.title.slice(0, 120) : null, s.id);
+  return { ok: true };
+});
+route("GET", "/api/prof/sessions/:id/live", (ctx) => {
+  const u = needUser(ctx, "professor");
+  const s = ownSession(u, ctx.params.id);
+  const r = live.runtime(s.id);
+  const since = Math.max(0, Number(ctx.url.searchParams.get("since")) || 0), rev = Number(ctx.url.searchParams.get("rev")) || 0;
+  const from = rev !== r.editRev ? 0 : since;
+  const marks = new Map(all("SELECT COALESCE(anchor_line, line_idx) i, COUNT(*) n FROM confusion_events WHERE session_id = ? AND COALESCE(anchor_line, line_idx) IS NOT NULL GROUP BY i", s.id).map((x) => [x.i, x.n]));
+  const lines = all("SELECT idx, t, text, original, edited_at, unsure, origin FROM transcript_lines WHERE session_id = ? AND idx >= ? ORDER BY idx", s.id, from)
+    .map((l) => ({ ...l, unsure: parse(l.unsure, []) }));
+  const clock = live.sessionClock(s);
+  const recent = all("SELECT DISTINCT student_id FROM confusion_events WHERE session_id = ? AND t >= ?", s.id, clock - 90).length;
+  return {
+    status: s.status, clock, rev: r.editRev, full: from === 0, lines, interim: r.interim,
+    // only the most recent 200 lines' marks travel with each poll
+    marks: Object.fromEntries([...marks].filter(([i]) => i >= Math.max(0, since - 200))),
+    taps: all("SELECT t FROM confusion_events WHERE session_id = ? ORDER BY t", s.id).map((x) => x.t),
+    present: live.presentCount(s.id), lostNow: recent,
+    gaps: all("SELECT from_t, to_t, reason FROM transcript_gaps WHERE session_id = ? ORDER BY from_t", s.id),
+    ...statusBlock(s.id),
+  };
+});
+route("POST", "/api/prof/sessions/:id/start", (ctx) => {
+  const u = needUser(ctx, "professor");
+  const s = ownSession(u, ctx.params.id);
+  if (s.status === "ended") fail(409, "This class has ended. Start a new session.");
+  live.startSession(s.id);
+  return { ok: true, status: one("SELECT status FROM lecture_sessions WHERE id = ?", s.id).status };
+});
+route("POST", "/api/prof/sessions/:id/end", async (ctx) => {
+  const u = needUser(ctx, "professor");
+  const s = ownSession(u, ctx.params.id);
+  if (s.status === "ready") { run("DELETE FROM lecture_sessions WHERE id = ? AND status = 'ready'", s.id); return { ok: true, discarded: true }; }
+  live.endSession(s.id); // finishes in the background
+  return { ok: true };
+});
+route("POST", "/api/prof/sessions/:id/line", (ctx, b) => {
+  const u = needUser(ctx, "professor");
+  const s = ownSession(u, ctx.params.id);
+  if (s.status !== "live") fail(409, "Class isn't live.");
+  const origin = b.origin === "sample" ? (DEMO ? "sample" : fail(400, "Sample lines are off.")) : b.origin === "speech" ? "speech" : "typed";
+  return { idx: live.addLine(s.id, b.text, { origin }) };
+});
+route("POST", "/api/prof/sessions/:id/line-edit", (ctx, b) => {
+  const u = needUser(ctx, "professor");
+  const s = ownSession(u, ctx.params.id);
+  return { ok: live.editLine(s.id, Number(b.idx), b.text) };
+});
+route("GET", "/api/prof/sessions/:id/report", (ctx) => {
+  const u = needUser(ctx, "professor");
+  const s = ownSession(u, ctx.params.id);
+  const sum = one("SELECT * FROM session_summaries WHERE session_id = ?", s.id);
+  const job = jobs.jobFor("summary", s.id);
+  const c = one("SELECT id, name, code FROM courses WHERE id = ?", s.course_id), sec = one("SELECT name FROM sections WHERE id = ?", s.section_id);
+  return {
+    session: sessionCard(s), course: c, section: sec,
+    summary: sum ? { status: sum.status, published: !!sum.published, error: sum.error, payload: parse(sum.payload) } : null,
+    job: job ? { status: job.status, attempts: job.attempts, error: job.last_error, max: jobs.MAX_ATTEMPTS } : null,
+    analytics: summary.profAnalytics(s.id), ai: aiAvailable(),
+  };
+});
+route("POST", "/api/prof/sessions/:id/retry-summary", (ctx) => {
+  const u = needUser(ctx, "professor");
+  const s = ownSession(u, ctx.params.id);
+  if (s.status !== "ended") fail(409, "End the class first.");
+  run("UPDATE session_summaries SET status = 'pending', error = NULL WHERE session_id = ? AND status = 'failed'", s.id);
+  jobs.enqueue("summary", s.id, { restart: true });
+  return { ok: true };
+});
+route("POST", "/api/prof/sessions/:id/moments/:idx", async (ctx, b) => {
+  const u = needUser(ctx, "professor");
+  const s = ownSession(u, ctx.params.id);
+  const idx = Number(ctx.params.idx);
+  const m = summary.moments(s.id)[idx] || fail(404, "No such moment.");
+  if (b.kind === "material") {
+    const lines = all("SELECT text FROM transcript_lines WHERE session_id = ? AND t BETWEEN ? AND ?", s.id, m.start - 90, m.end + 15).map((l) => l.text).join(" ");
+    return { passages: mat.retrieve(s.course_id, lines, { limit: 4, audience: "staff" }).map((p) => ({ title: p.title, location: p.location, url: p.url, visibility: p.visibility, text: p.text.slice(0, 600) })) };
+  }
+  if (b.kind === "revisit") {
+    const id = newId(9);
+    run("INSERT INTO prof_notes (id, session_id, moment_idx, kind, text, created_at) VALUES (?, ?, ?, 'revisit', ?, ?)", id, s.id, idx, String(b.text || "Revisit this topic next class").slice(0, 500), now());
+    return { ok: true, id };
+  }
+  if (b.kind === "clarification" || b.kind === "suggestion") {
+    if (!aiAvailable()) fail(503, "The AI is off on this server.");
+    try { return await summary.draftForMoment(s.id, idx, b.kind); }
+    catch (e) { fail(503, e instanceof AiError ? help.friendly(e.code) : "Couldn't draft that."); }
+  }
+  fail(400, "Unknown action.");
+});
+
+// --- professor: audio ---
+async function profAudio(ctx) {
+  const u = needUser(ctx, "professor");
+  const s = ownSession(u, ctx.params.id);
+  if (ctx.req.method === "DELETE") { live.audioStopped(s.id); return { ok: true }; }
+  if (s.status !== "live") fail(409, "Class isn't live.");
+  const buf = await readRaw(ctx.req, 512 * 1024);
+  if (!buf) fail(413, "Too large.");
+  return { seq: live.audioPiece(s.id, buf, ctx.url.searchParams.get("first") === "1") };
+}
+route("POST", "/api/prof/sessions/:id/audio", profAudio, { raw: true });
+route("DELETE", "/api/prof/sessions/:id/audio", profAudio, { raw: true });
+
+route("POST", "/api/prof/courses/:id/materials", async (ctx) => {
+  const u = needUser(ctx, "professor");
+  const c = ownCourse(u, ctx.params.id);
+  const buf = await readRaw(ctx.req, mat.MAX_FILE);
+  if (!buf) fail(413, "Files can be up to 15 MB.");
+  let name = ""; try { name = decodeURIComponent(String(ctx.req.headers["x-filename"] || "")); } catch {}
+  name = path.basename(name || "file.txt").replace(/[^\w .()-]/g, "_").slice(0, 120);
+  const got = await mat.extractFile(name, buf);
+  if (got.status === "unsupported" || got.status === "error") fail(400, got.warning);
+  const staff = ctx.url.searchParams.get("visibility") === "staff";
+  const r = mat.upsertMaterial({ course_id: c.id, source: "upload", external_type: "upload", external_id: newId(6), title: name, kind: mat.kindOf(name),
+    visibility: staff ? "staff" : "students", visibility_reason: staff ? "Set by you: professor only" : "Set by you: students can see",
+    parts: got.parts, status: got.status, warning: got.warning });
+  return { ok: true, id: r.id, status: got.status, warning: got.warning, passages: got.parts.length };
+}, { raw: true });
+
+// --- student ---
+function studentCourses(u) {
+  return all(`SELECT c.id, c.name, c.code, c.term, c.source, s.id section_id, s.name section_name, e.source enrolled_by
+    FROM enrollments e JOIN sections s ON s.id = e.section_id JOIN courses c ON c.id = s.course_id WHERE e.user_id = ? ORDER BY c.code`, u.id).map((c) => {
+    const active = one("SELECT id, title, status, started_at FROM lecture_sessions WHERE section_id = ? AND status IN ('live', 'ending') LIMIT 1", c.section_id);
+    const last = one(`SELECT s.id, s.title, s.ended_at, ss.status summary FROM lecture_sessions s LEFT JOIN session_summaries ss ON ss.session_id = s.id
+      WHERE s.section_id = ? AND s.status = 'ended' ORDER BY s.ended_at DESC LIMIT 1`, c.section_id);
+    return { ...c, active, last, stats: summary.studentStats(u.id, c.id) };
+  });
+}
+route("GET", "/api/student/courses", (ctx) => {
+  const u = needUser(ctx, "student");
+  const conn = canvas.connectionFor(u.id);
+  return { courses: studentCourses(u), canvas: conn ? { mode: conn.mode, host: conn.canvas_host } : null };
+});
+route("POST", "/api/student/join", (ctx, b) => {
+  const u = needUser(ctx, "student");
+  if (!allowed(`join:${u.id}`, 0.2, 6)) fail(429, "Too many tries. Wait a minute.");
+  const code = String(b.code || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const sec = one("SELECT * FROM sections WHERE join_code = ?", code) || fail(404, "No class has that code. Check it with your professor.");
+  // A student belongs to one section per course; joining another section of the same course needs the professor.
+  const other = one("SELECT s.name FROM enrollments e JOIN sections s ON s.id = e.section_id WHERE e.user_id = ? AND s.course_id = ? AND s.id != ?", u.id, sec.course_id, sec.id);
+  if (other) fail(409, `You're already in ${other.name} of this course. Ask your professor if you need to switch sections.`);
+  run("INSERT OR IGNORE INTO enrollments (user_id, section_id, source, created_at) VALUES (?, ?, 'code', ?)", u.id, sec.id, now());
+  const c = one("SELECT id, name, code FROM courses WHERE id = ?", sec.course_id);
+  const active = one("SELECT id FROM lecture_sessions WHERE section_id = ? AND status = 'live'", sec.id);
+  return { ok: true, course: c, section: { id: sec.id, name: sec.name }, activeSession: active?.id || null };
+});
+route("GET", "/api/student/courses/:id", (ctx) => {
+  const u = needUser(ctx, "student");
+  const c = enrolledCourse(u, ctx.params.id);
+  const sessions = all(`SELECT s.id, s.title, s.status, s.started_at, s.ended_at, ss.status summary, ss.published,
+      (SELECT COUNT(*) FROM confusion_events e WHERE e.session_id = s.id AND e.student_id = ?) my_taps
+    FROM lecture_sessions s LEFT JOIN session_summaries ss ON ss.session_id = s.id WHERE s.section_id = ? AND s.status != 'ready' ORDER BY s.created_at DESC LIMIT 40`, u.id, c.section_id);
+  const history = all(`SELECT e.id, e.session_id, e.t, e.topic, e.category, e.self_status, s.started_at FROM confusion_events e JOIN lecture_sessions s ON s.id = e.session_id
+    WHERE e.student_id = ? AND s.course_id = ? ORDER BY e.created_at DESC LIMIT 50`, u.id, c.id);
+  return { course: { id: c.id, name: c.name, code: c.code, term: c.term, section: c.section_name, office_hours_url: c.office_hours_url, tutoring_url: c.tutoring_url },
+    active: sessions.find((s) => s.status === "live" || s.status === "ending") || null, sessions, history, stats: summary.studentStats(u.id, c.id) };
+});
+route("GET", "/api/student/sessions/:id/live", (ctx) => {
+  const u = needUser(ctx, "student");
+  const s = enrolledSession(u, ctx.params.id);
+  if (s.status === "live") live.markPresent(s.id, u.id);
+  const r = live.runtime(s.id);
+  const wantLines = ctx.url.searchParams.get("lines") === "1";
+  const since = Math.max(0, Number(ctx.url.searchParams.get("since")) || 0), rev = Number(ctx.url.searchParams.get("rev")) || 0;
+  const from = rev !== r.editRev ? 0 : since;
+  const c = one("SELECT name, code FROM courses WHERE id = ?", s.course_id);
+  return {
+    status: s.status, title: s.title, course: c, clock: live.sessionClock(s), rev: r.editRev, full: from === 0,
+    lines: wantLines ? all("SELECT idx, t, text FROM transcript_lines WHERE session_id = ? AND idx >= ? ORDER BY idx", s.id, Math.max(from, (one("SELECT MAX(idx) m FROM transcript_lines WHERE session_id = ?", s.id).m ?? 0) - 150)) : null,
+    lastIdx: one("SELECT MAX(idx) m FROM transcript_lines WHERE session_id = ?", s.id).m,
+    gaps: all("SELECT from_t, to_t FROM transcript_gaps WHERE session_id = ? ORDER BY from_t", s.id),
+    audio: r.relay.header ? { id: r.relay.id, seq: r.relay.seq } : null,
+    ai: aiAvailable(),
+    mine: all("SELECT id, t, self_status FROM confusion_events WHERE session_id = ? AND student_id = ? ORDER BY t", s.id, u.id),
+  };
+});
+route("GET", "/api/student/sessions/:id/audio", async (ctx) => {
+  const u = needUser(ctx, "student");
+  const s = enrolledSession(u, ctx.params.id);
+  const relay = live.runtime(s.id).relay;
+  const n = Number(ctx.url.searchParams.get("seq"));
+  const piece = n === 0 ? relay.header : relay.pieces.get(n);
+  if (!piece) fail(404, "Not available.");
+  return { binary: piece, type: "audio/webm" };
+});
+route("POST", "/api/student/sessions/:id/lost", (ctx) => {
+  const u = needUser(ctx, "student");
+  const s = enrolledSession(u, ctx.params.id);
+  if (s.status !== "live") fail(409, "Class isn't live right now.");
+  const t = live.sessionClock(s);
+  // A second tap within 8 seconds returns the same event (double taps, flaky Wi-Fi retries).
+  let ev = one("SELECT * FROM confusion_events WHERE session_id = ? AND student_id = ? AND t > ? ORDER BY t DESC LIMIT 1", s.id, u.id, t - 8);
+  if (!ev) {
+    if (one("SELECT COUNT(*) n FROM confusion_events WHERE session_id = ? AND student_id = ?", s.id, u.id).n >= help.LIMITS.perStudentSession) fail(429, "That's the limit of taps for one class.");
+    const last = one("SELECT idx FROM transcript_lines WHERE session_id = ? AND t <= ? ORDER BY idx DESC LIMIT 1", s.id, t + 0.5);
+    const first = one("SELECT MIN(idx) i FROM transcript_lines WHERE session_id = ? AND t >= ?", s.id, t - 60);
+    const id = newId(9);
+    run("INSERT INTO confusion_events (id, session_id, student_id, t, line_idx, context_from, context_to, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      id, s.id, u.id, t, last?.idx ?? null, first?.i ?? null, last?.idx ?? null, now());
+    ev = one("SELECT * FROM confusion_events WHERE id = ?", id);
+  }
+  const phrases = all("SELECT idx, t, text FROM transcript_lines WHERE session_id = ? AND t <= ? ORDER BY idx DESC LIMIT 5", s.id, ev.t + 0.5).reverse();
+  const gaps = help.gapsBetween(s.id, ev.t - 60, ev.t + 1);
+  return { event: { id: ev.id, t: ev.t, line_idx: ev.line_idx }, phrases, gaps, ai: aiAvailable(),
+    others: all("SELECT DISTINCT student_id FROM confusion_events WHERE session_id = ? AND t >= ? AND student_id != ?", s.id, ev.t - 90, u.id).length };
+});
+route("POST", "/api/student/events/:id/help", async (ctx, b) => {
+  const u = needUser(ctx, "student");
+  let ev = ownEvent(u, ctx.params.id);
+  if (!allowed(`help:${u.id}`, 1, helpBurst())) fail(429, "Slow down a little: one help request at a time.");
+  const kind = ["explain", "retry", "prereq", "catchup"].includes(b.kind) ? b.kind : fail(400, "Unknown help kind.");
+  if (kind === "explain") {
+    // The student's choice of focus is saved once, on the first explanation.
+    if (!one("SELECT 1 FROM help_responses WHERE event_id = ? AND kind = 'explain' AND status IN ('ok', 'no_ai')", ev.id)) {
+      const anchor = ["current", "phrase", "earlier", "question"].includes(b.anchor) ? b.anchor : "current";
+      let line = Number.isInteger(b.line) ? one("SELECT idx FROM transcript_lines WHERE session_id = ? AND idx = ? AND t <= ?", ev.session_id, b.line, ev.t + 1)?.idx ?? null : null;
+      if (anchor === "current") line = ev.line_idx;
+      if (anchor === "earlier") line = null;
+      const category = ["term", "reasoning", "connection", "missed"].includes(b.category) ? b.category : null;
+      const question = typeof b.question === "string" ? b.question.trim().slice(0, 300) || null : null;
+      run("UPDATE confusion_events SET anchor = ?, anchor_line = ?, category = ?, question = ? WHERE id = ?", anchor, line, category, question, ev.id);
+      ev = ownEvent(u, ev.id);
+    }
+  }
+  const max = kind === "explain" ? 1 : kind === "catchup" ? help.LIMITS.catchup : help.LIMITS.retry;
+  const attempt = kind === "explain" ? 1 : Math.max(1, Math.min(max, Number(b.attempt) || 1));
+  if (Number(b.attempt) > max) fail(429, kind === "catchup" ? "That's the most catch-ups for one moment." : "That's the most re-explanations for one moment. Your professor will see this spot stayed unclear.");
+  return await help.requestHelp(ev, kind, attempt);
+});
+route("POST", "/api/student/events/:id/status", (ctx, b) => {
+  const u = needUser(ctx, "student");
+  const ev = ownEvent(u, ctx.params.id);
+  const st = b.status === "resolved" ? "resolved" : b.status === "still" ? "still" : fail(400, "Unknown status.");
+  run("UPDATE confusion_events SET self_status = ?, resolved_at = ? WHERE id = ?", st, st === "resolved" ? now() : null, ev.id);
+  return { ok: true };
+});
+route("POST", "/api/student/events/:id/check", async (ctx) => {
+  const u = needUser(ctx, "student");
+  const ev = ownEvent(u, ctx.params.id);
+  if (!allowed(`help:${u.id}`, 1, helpBurst())) fail(429, "Slow down a little.");
+  if (one("SELECT COUNT(*) n FROM checks WHERE event_id = ? AND kind = 'comprehension'", ev.id).n >= 3) fail(429, "That's three checks for this moment.");
+  try { return await help.makeCheck(ev); }
+  catch (e) { fail(503, e instanceof AiError ? help.friendly(e.code) : "Couldn't make a check right now."); }
+});
+route("POST", "/api/student/checks/:id/answer", (ctx, b) => {
+  const u = needUser(ctx, "student");
+  const c = one("SELECT k.* FROM checks k JOIN confusion_events e ON e.id = k.event_id WHERE k.id = ? AND e.student_id = ?", String(ctx.params.id), u.id) || fail(404, "Not found.");
+  const r = help.answerCheck(c, Number(b.chosen), !!b.skip);
+  if (r.error) fail(400, r.error);
+  return r;
+});
+route("POST", "/api/student/events/:id/office-hours", (ctx, b) => {
+  const u = needUser(ctx, "student");
+  const ev = ownEvent(u, ctx.params.id);
+  const text = String(b.text || "").trim().slice(0, 1500) || fail(400, "Write the question first.");
+  run("INSERT INTO office_hours_questions (event_id, student_id, text, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (event_id) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at", ev.id, u.id, text, now());
+  return { ok: true };
+});
+route("GET", "/api/student/sessions/:id", (ctx) => {
+  const u = needUser(ctx, "student");
+  const s = enrolledSession(u, ctx.params.id);
+  return summary.studentSessionView(s.id, u.id);
+});
+
+// ---------- static pages ----------
+const PAGES = { "/": null, "/login": "login.html", "/prof": "prof.html", "/student": "student.html" };
+const STATIC = new Set(["style.css", "common.js", "login.js", "prof.js", "student.js", "favicon.svg"]);
+const TYPES = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml" };
+
+async function handle(req, res) {
   let url;
   try { url = new URL(req.url, "http://x"); } catch { res.writeHead(400); res.end(); return; }
-  const prof = isProf(req, url);
-  if (!prof && !allowed(clientIp(req))) { res.writeHead(429, SECURITY_HEADERS); res.end("Slow down"); return; }
+  const session = (() => { try { return auth.sessionFrom(req); } catch { return null; } })();
+  if (!allowed(session ? `u:${session.user.id}` : `ip:${clientIp(req)}`, session ? 25 : 15, session ? 60 : 40)) { res.writeHead(429, SECURITY_HEADERS); res.end("Slow down"); return; }
 
-  if (url.pathname === "/api/audio") {
-    if (req.method === "POST") { // professor uploads one piece
-      if (!prof) { json(res, { error: "Professor only" }, 403); return; }
-      const buf = await readRaw(req, 512 * 1024);
-      if (!buf) { if (!res.headersSent) json(res, { error: "Too large" }, 413); return; }
-      if (url.searchParams.get("first") === "1") { relay.id++; relay.header = buf; relay.pieces.clear(); relay.seq = 0; newStream(buf); }
-      else if (relay.header) { relay.seq++; relay.pieces.set(relay.seq, buf); relay.pieces.delete(relay.seq - 30); feed(buf); }
-      json(res, { seq: relay.seq }); return;
+  if (url.pathname.startsWith("/api/")) {
+    const r = routes.find((x) => x.method === req.method && x.re.test(url.pathname));
+    if (!r) { send(res, 404, { error: "Not found." }); return; }
+    const ctx = { req, url, session, params: url.pathname.match(r.re).groups || {} };
+    try {
+      if (req.method !== "GET" && !r.opts.open) {
+        if (!session) fail(401, "Please sign in.");
+        if (!auth.csrfOk(req, session)) fail(403, "This page is out of date. Reload and try again.");
+      }
+      if (req.method !== "GET" && r.opts.open && req.headers["x-lost-csrf"] === undefined && !String(req.headers["content-type"] || "").startsWith("application/json")) fail(403, "Bad request.");
+      const body = req.method === "POST" && !r.opts.raw ? await readJson(req) : {};
+      const out = await r.fn(ctx, body);
+      const headers = ctx.setCookie ? { "set-cookie": ctx.setCookie } : {};
+      if (r.opts.redirect) { res.writeHead(302, { location: out.redirect, ...SECURITY_HEADERS, ...headers }); res.end(); return; }
+      if (out?.binary) { res.writeHead(200, { "content-type": out.type, "cache-control": "no-store", ...SECURITY_HEADERS }); res.end(out.binary); return; }
+      send(res, 200, out ?? {}, headers);
+    } catch (e) {
+      if (e instanceof HttpError) send(res, e.status, { error: e.message });
+      else { console.error("[api]", req.method, url.pathname, e); send(res, 500, { error: "Something went wrong on the server." }); }
     }
-    if (req.method === "DELETE") { if (prof) { relay.header = null; relay.pieces.clear(); relay.seq = -1; endStream(); } json(res, {}); return; }
-    // students fetch a piece; only joined students
-    const sid = url.searchParams.get("id");
-    if (!S.students.has(sid) || !relay.header) { res.writeHead(404, SECURITY_HEADERS); res.end(); return; }
-    const n = Number(url.searchParams.get("seq"));
-    const piece = n === 0 ? relay.header : relay.pieces.get(n);
-    if (!piece) { res.writeHead(404, SECURITY_HEADERS); res.end(); return; }
-    res.writeHead(200, { "content-type": "audio/webm", "cache-control": "no-store", ...SECURITY_HEADERS }); res.end(piece); return;
-  }
-
-  // Professor uploads a course file: raw bytes, file name in the x-filename header.
-  if (url.pathname === "/api/material" && req.method === "POST") {
-    if (!prof) { json(res, { error: "Professor only" }, 403); return; }
-    const buf = await readRaw(req, MAX_UPLOAD);
-    if (!buf) { if (!res.headersSent) json(res, { error: "Files can be up to 15 MB." }, 413); return; }
-    let name = ""; try { name = decodeURIComponent(String(req.headers["x-filename"] || "")); } catch {}
-    const r = await addMaterial(name, buf); setTerms(vocabTerms());
-    json(res, r); return;
-  }
-
-  if (url.pathname === "/api/poll" && req.method === "GET") {
-    const role = url.searchParams.get("role");
-    if (role === "prof") {
-      if (!prof) { json(res, { error: "Professor only" }, 403); return; }
-      json(res, { state: profView() }); return;
-    }
-    const id = url.searchParams.get("id");
-    if (!validId(id)) { json(res, { error: "Bad id" }, 400); return; }
-    if (!clients.student.has(id) && clients.student.size >= MAX_STREAMS) { json(res, { error: "Busy" }, 503); return; }
-    clients.student.set(id, Date.now());
-    json(res, { state: studentView(id, url.searchParams.get("lines") === "1") }); return;
-  }
-  const handler = routes[`${req.method} ${url.pathname}`];
-  if (handler) {
-    if (PROF_ONLY.has(url.pathname) && !prof) { json(res, { error: "Professor only" }, 403); return; }
-    const b = await body(req);
-    if (b === null) { if (!res.headersSent) json(res, { error: "Too large" }, 413); return; }
-    const out = await handler(b, prof); json(res, out);
     return;
   }
   if (req.method !== "GET") { res.writeHead(405, SECURITY_HEADERS); res.end(); return; }
 
-  // Only these three files are served. The professor page itself is public HTML, but it can't do
-  // anything without the key.
-  const page = { "/": "student.html", "/prof": "prof.html" }[url.pathname] || url.pathname.slice(1);
-  if (!PUBLIC_FILES.has(page)) { res.writeHead(404, SECURITY_HEADERS); res.end("Not found"); return; }
-  fs.readFile(path.join(here, "public", page), (err, data) => {
+  // Join links and QR codes land here: sign in first if needed, then join.
+  const join = url.pathname.match(/^\/join\/([A-Za-z0-9]{4,10})$/);
+  if (join) {
+    const target = `/student#/join/${join[1].toUpperCase()}`;
+    res.writeHead(302, { location: session ? (session.user.role === "student" ? target : "/prof") : `/login?next=${encodeURIComponent(target)}`, ...SECURITY_HEADERS }); res.end(); return;
+  }
+  if (url.pathname in PAGES) {
+    const home = session ? (session.user.role === "professor" ? "/prof" : "/student") : "/login";
+    const page = PAGES[url.pathname];
+    const go = (to) => { res.writeHead(302, { location: to, ...SECURITY_HEADERS }); res.end(); };
+    if (!page) return go(home);
+    if (page === "login.html") return session ? go(home) : serveFile(res, page);
+    if (!session) return go(`/login?next=${encodeURIComponent(url.pathname)}`);
+    // A student opening /prof (or the other way round) goes to their own portal.
+    if ((page === "prof.html") !== (session.user.role === "professor")) return go(home);
+    return serveFile(res, page);
+  }
+  const name = url.pathname.slice(1);
+  if (STATIC.has(name)) return serveFile(res, name);
+  res.writeHead(404, SECURITY_HEADERS); res.end("Not found");
+}
+function serveFile(res, name) {
+  fs.readFile(path.join(here, "public", name), (err, data) => {
     if (err) { res.writeHead(404, SECURITY_HEADERS); res.end("Not found"); return; }
-    res.writeHead(200, { "content-type": types[path.extname(page)] || "text/plain", ...SECURITY_HEADERS }); res.end(data);
+    res.writeHead(200, { "content-type": TYPES[path.extname(name)] || "text/plain", "cache-control": "no-cache", ...SECURITY_HEADERS }); res.end(data);
   });
-});
+}
 
 // ---------- public link (npm run share) ----------
-// Campus Wi-Fi usually blocks laptop-to-laptop traffic, so `npm run share` also starts a Cloudflare
-// quick tunnel and shows its https link on the professor screen. The link changes on every start.
-let publicUrl = "", tunnel = null;
+let tunnelUrl = "", tunnel = null;
 function startTunnel() {
   const names = process.platform === "win32" ? ["cloudflared.exe"] : ["cloudflared"];
   const dirs = [...(process.env.PATH || "").split(path.delimiter), "/opt/homebrew/bin", "/usr/local/bin"];
   const bin = dirs.flatMap((d) => names.map((n) => path.join(d, n))).find((f) => fs.existsSync(f));
-  if (!bin) {
-    console.log(`  Public link: cloudflared is not installed. Mac: brew install cloudflared. Windows: winget install --id Cloudflare.cloudflared. Then npm run share again.`);
-    return;
-  }
+  if (!bin) { console.log("  Public link: cloudflared is not installed (Mac: brew install cloudflared)."); return; }
   tunnel = spawn(bin, ["tunnel", "--no-autoupdate", "--url", `http://localhost:${PORT}`]);
   let shown = false;
   const look = (d) => {
     const m = String(d).match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
-    if (m && !shown) { shown = true; publicUrl = m[0]; console.log(`\n  Students (any network):  ${publicUrl}   (code ${S.code})\n`); }
+    if (m && !shown) { shown = true; tunnelUrl = m[0]; console.log(`\n  Public link (any network): ${tunnelUrl}\n`); }
   };
   tunnel.stdout.on("data", look); tunnel.stderr.on("data", look);
-  tunnel.on("exit", (code) => { publicUrl = ""; tunnel = null; console.log(`  Public link stopped (cloudflared exited ${code}). Restart npm run share to get a new one.`); });
+  tunnel.on("exit", (code) => { tunnelUrl = ""; tunnel = null; console.log(`  Public link stopped (cloudflared exited ${code}).`); });
 }
-for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { tunnel?.kill(); process.exit(0); });
-process.on("exit", () => tunnel?.kill());
 
-server.listen(PORT, "0.0.0.0", () => {
-  const ips = Object.values(os.networkInterfaces()).flat().filter((n) => n && n.family === "IPv4" && !n.internal).map((n) => n.address);
-  console.log(`\nLost is running.\n`);
-  console.log(`  Professor (this laptop, use Chrome, keep this link private):`);
-  console.log(`    http://localhost:${PORT}/prof?key=${PROF_KEY}`);
-  for (const ip of ips) console.log(`  Students (same Wi-Fi):               http://${ip}:${PORT}`);
-  console.log(`\n  Claude summaries: ${ai === "api" ? `ON (${MODEL}, Anthropic API)` : ai === "cli" ? `ON (${MODEL} through Claude Code, free)` : "OFF (install Claude Code and sign in for free summaries, or set ANTHROPIC_API_KEY)"}`);
-  console.log(`  Transcript: ${engine.name === "deepgram" ? "Deepgram Nova-3 (audio goes to Deepgram)" : engine.name !== "off" ? `${engine.name}, loading the model (the first start downloads it)…` : `Chrome speech recognition, because ${engine.why}`}`);
-  console.log(`  Course terms in use: ${vocabTerms().length}\n`);
-  if (process.argv.includes("--share") || process.env.SHARE === "1") { console.log("  Starting the public link…"); startTunnel(); }
-});
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { tunnel?.kill(); process.exit(0); });
+  process.on("exit", () => tunnel?.kill());
+  await boot();
+  console.log(`\nLost is running on http://localhost:${PORT}`);
+  for (const ip of lanIps()) console.log(`  Same Wi-Fi: http://${ip}:${PORT}`);
+  console.log(`  AI: ${aiProvider() === "api" ? `${MODEL} through the Anthropic API` : aiProvider() === "cli" ? `${MODEL} through Claude Code (claude -p)` : "off (set ANTHROPIC_API_KEY or install Claude Code)"}`);
+  console.log(`  Transcript: ${engine.name === "deepgram" ? "Deepgram Nova-3" : engine.name !== "off" ? `${engine.name} (loading)` : `Chrome speech recognition (${engine.why || "no server engine"})`}`);
+  console.log(`  Canvas OAuth: ${canvas.oauthConfig("usm").ready ? "configured" : `not configured (missing ${canvas.oauthConfig("usm").missing.join(", ")})`}`);
+  console.log(`  Demo accounts: ${DEMO ? `on (password ${DEMO_PASSWORD}; one-click buttons on the sign-in page)` : "off"}\n`);
+  if (process.argv.includes("--share") || process.env.SHARE === "1") startTunnel();
+}

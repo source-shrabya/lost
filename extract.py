@@ -10,7 +10,9 @@ from collections import Counter
 from xml.etree import ElementTree as ET
 
 path, kind = sys.argv[1], sys.argv[2]
-out = {"text": "", "titles": [], "notes": [], "pages": 0, "scanned": False, "warning": "", "terms": []}
+out = {"text": "", "titles": [], "notes": [], "pages": 0, "scanned": False, "warning": "", "terms": [], "parts": []}
+# parts: [{"loc": "Slide 3", "text": "...", "staff": false}] so answers can cite a page or slide.
+# Speaker notes are marked staff: they are the professor's notes, not something students were shown.
 
 A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 P = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
@@ -53,6 +55,13 @@ try:
                 if style is not None and "heading" in (style.get(W + "val") or "").lower():
                     out["titles"].append(t)
         out["text"] = "\n".join(paras)
+        heading, buf = "Start", []
+        for t in paras:
+            if t in out["titles"] and buf:
+                out["parts"].append({"loc": f"Section: {heading[:60]}", "text": "\n".join(buf), "staff": False}); buf = []
+            if t in out["titles"]: heading = t
+            buf.append(t)
+        if buf: out["parts"].append({"loc": f"Section: {heading[:60]}", "text": "\n".join(buf), "staff": False})
 
     elif kind == "pptx":
         with zipfile.ZipFile(path) as z:
@@ -60,11 +69,13 @@ try:
             slides = sorted([n for n in names if re.match(r"ppt/slides/slide\d+\.xml$", n)], key=num)
             notes = {num(n): n for n in names if re.match(r"ppt/notesSlides/notesSlide\d+\.xml$", n)}
             lines = []
-            for s in slides:
+            for k, s in enumerate(slides, 1):
+                slide_lines = []
                 for is_title, paras in shape_texts(z.read(s)):
                     if is_title:
                         out["titles"].append(" ".join(paras))
-                    lines.extend(paras)
+                    lines.extend(paras); slide_lines.extend(paras)
+                if slide_lines: out["parts"].append({"loc": f"Slide {k}", "text": "\n".join(slide_lines), "staff": False})
                 # speaker notes: skip the slide-number placeholder text
                 if num(s) in notes:
                     for _, paras in shape_texts(z.read(notes[num(s)])):
@@ -72,6 +83,7 @@ try:
                             if not t.isdigit():
                                 out["notes"].append(t)
                                 lines.append(t)
+                                out["parts"].append({"loc": f"Slide {k} speaker notes", "text": t, "staff": True})
             out["pages"] = len(slides)
             out["text"] = "\n".join(lines)
 
@@ -82,6 +94,7 @@ try:
         texts = [(page.extract_text() or "").strip() for page in reader.pages]
         empty = sum(1 for t in texts if len(t) < 20)
         out["text"] = "\n".join(texts)
+        out["parts"] = [{"loc": f"Page {k}", "text": t, "staff": False} for k, t in enumerate(texts, 1) if t]
         if out["pages"] and empty / out["pages"] > 0.5:
             out["scanned"] = True
             out["warning"] = f"{empty} of {out['pages']} pages have no text. This looks scanned and needs OCR, which Lost doesn't do. Paste the key terms instead."

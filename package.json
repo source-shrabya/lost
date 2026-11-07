@@ -1,9 +1,20 @@
 {
   "name": "lost",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "scripts": { "start": "node server.js", "share": "node server.js --share" },
-  "engines": { "node": ">=20.12" },
-  "dependencies": { "@anthropic-ai/sdk": "^1.5.0" }
+  "scripts": {
+    "start": "node server.js",
+    "share": "node server.js --share",
+    "test": "node --test test/*.test.js",
+    "reset-demo": "node scripts/reset-demo.js"
+  },
+  "engines": {
+    "node": ">=20.12"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.5.0",
+    "better-sqlite3": "^11.10.0",
+    "qrcode": "^1.5.4"
+  }
 }

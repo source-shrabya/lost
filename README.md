@@ -1,186 +1,142 @@
 # Lost
 
-Students tap "I'm lost" during a lecture and keep listening. The professor sees a small counter of how many are lost right now. After class, each student gets a catch-up for the moments they tapped, and the professor gets a report of where the class got lost and what was being said.
+Lost helps a student find the exact point in a lecture where they got lost, understand it from the lecture and the course materials, and get back into the class. After class, students get a summary and a private review of their own moments, and the professor sees when confusion happened and on which ideas.
 
-Built for the VOXO Hatchathon 2026.
+The live loop is: mark confusion, pick what lost you, read a short explanation with its context and the flow of the discussion, check your understanding, catch up to what the professor is saying now.
 
-## Set up on a new laptop
+Built for the VOXO Hatchathon 2026. This is a hackathon build. It is not production-ready: see "Limits" and "What production needs" below.
 
-You need Node.js 20.12 or newer (the LTS from nodejs.org is fine) and git. Then:
+## Run it
+
+You need Node.js 20.12 or newer.
 
 ```
 git clone https://github.com/source-shrabya/lost.git
 cd lost
 npm install
-npm start
+cp .env.example .env      # then fill in what you have; everything is optional
+npm start                 # http://localhost:3000
 ```
 
-That is enough to run a class on a network that lets laptops reach each other. On campus Wi-Fi, use `npm run share` instead (see below). The transcript then comes from Chrome's speech recognition, and the after-class summaries are off. Each of these adds one piece:
+On campus Wi-Fi, which blocks laptop-to-laptop traffic, use `npm run share` instead. It starts a Cloudflare quick tunnel (install once with `brew install cloudflared`) and prints a public https link. Students use that link; the professor can keep using `localhost`, because Chrome only allows the mic on localhost or https.
 
-1. Free after-class summaries: install Claude Code (claude.com/claude-code), run `claude` once in a terminal and sign in. Lost finds it on its own; the terminal says `Claude summaries: ON (claude-haiku-5-5 through Claude Code, free)`.
-2. Better transcripts: put a Deepgram key in `.env` (see Deepgram below).
-3. Reading PDF, PPTX and DOCX course files, or a transcript engine that runs on the laptop: the Python setup under "Local engines" below.
-
-To get the latest version later:
+Other commands:
 
 ```
-git pull
-npm install
+npm test                       # automated tests (no network, fake AI, demo Canvas fixtures)
+npm run reset-demo -- --yes    # delete data/lost.db; the next start re-seeds the demo data
 ```
 
-If you did the Python setup, also run `.venv/bin/pip install -r requirements.txt` (Windows: `.venv\Scripts\pip install -r requirements.txt`).
+Reading PDF, PPTX and DOCX files, and the local speech engines, need the Python setup (Mac: `brew install ffmpeg`, `python3 -m venv .venv`, `.venv/bin/pip install -r requirements.txt`). Plain text and Canvas pages work without it.
 
-## Run it on campus Wi-Fi (npm run share)
+## Configuration
 
-Campus Wi-Fi usually blocks one laptop from opening a page on another, even when both are on the same network. `npm run share` gets around that: it starts Lost and a Cloudflare quick tunnel together, and students join through a public https link that works on any network, phones included.
+All settings are environment variables, read from `.env`. Names only; never commit values.
 
-Install cloudflared once (no account needed):
-
-```
-brew install cloudflared                       # Mac
-winget install --id Cloudflare.cloudflared     # Windows
-```
-
-Then, on the professor laptop:
-
-```
-npm run share
-```
-
-After a few seconds the terminal prints `Students (any network): https://....trycloudflare.com`, and the professor screen shows the same link above the class code. The professor still opens the `localhost` link from the terminal, because Chrome only allows the mic on localhost or https. The public link changes every time Lost starts, so share it again after a restart. Stopping Lost (Ctrl+C) stops the tunnel too.
-
-## Run it (two laptops, same Wi-Fi)
-
-On the professor laptop:
-
-```
-npm install
-npm start
-```
-
-The terminal prints two links.
-
-- Professor: open `http://localhost:3000/prof` in Chrome on this laptop. It has to be `localhost`, because Chrome only allows the mic on localhost or https.
-- Students: open the other link (something like `http://10.0.0.96:3000`) on any other device on the same Wi-Fi, and type the 4-letter code from the professor screen.
-
-If the student laptop can't load the page, macOS may be blocking incoming connections. Allow Node when the firewall asks, or check System Settings > Network > Firewall. Some campus Wi-Fi blocks laptop-to-laptop traffic. A phone hotspot works around that.
-
-## Transcript engines
-
-Lost can use one of four engines. The professor screen shows which one is running next to the Transcript heading.
-
-| Engine | Where it runs | Cost | Notes |
-|---|---|---|---|
-| Deepgram Nova-3 | Deepgram's servers | Pay per minute; new accounts get free credit | Most accurate in our tests. Needs internet. The lecture audio goes to Deepgram. Underlines words it isn't sure about. |
-| Moonshine v2 (medium) | The professor laptop | Free | Words appear while the professor talks. Audio stays on the laptop. |
-| faster-whisper (small.en) | The professor laptop | Free | Waits for a pause before each line. |
-| Chrome speech recognition | Google, through Chrome | Free | Fallback. Can't use course terms. |
-
-Lost uses Deepgram when a key is set, otherwise Moonshine. Force one with `TRANSCRIBER=deepgram`, `moonshine`, `whisper` or `off`.
-
-### Deepgram
-
-Make an API key at deepgram.com. In the `lost` folder, create a file named `.env` (git ignores it, so the key never reaches GitHub) with one line:
-
-```
-DEEPGRAM_API_KEY=your-key-here
-```
-
-Then `npm start`. The terminal says `Transcript: Deepgram Nova-3`. The key stays on the server and is never sent to browsers.
-
-### Local engines (Moonshine, faster-whisper) and reading course files
-
-One-time setup on the professor laptop. You need Python 3.9 or newer and ffmpeg. This is also what lets Lost read PDF, PPTX and DOCX files, so do it even if you use Deepgram.
-
-Mac:
-
-```
-brew install ffmpeg
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-```
-
-Windows (PowerShell):
-
-```
-winget install ffmpeg
-python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
-```
-
-The first start downloads the model. Wait for `moonshine-medium-streaming is ready` before clicking Start class. If the terminal says it's using Chrome speech recognition, the line after "because" says what's missing. Options: `MOONSHINE_MODEL=small` or `tiny` is faster and less accurate; `WHISPER_MODEL=base.en` speeds up Whisper.
-
-## Course materials
-
-Open "Course materials" on the professor screen (it's open before class starts).
-
-1. Type the course and lecture name.
-2. Upload PDF, PPTX, DOCX or TXT files, or paste notes. Lost reads the text, including slide titles and speaker notes, and suggests terms such as names, acronyms and repeated technical words. Files up to 15 MB. Only the extracted text is kept, in `data/` on the laptop; the uploaded file itself is not stored.
-3. Check each file's suggested terms and delete the wrong ones. The suggestions come from simple rules, so expect some noise.
-4. Tick "Use for this lecture" on the files that apply. Add your own terms, one per line ("term: meaning" is fine; only the term is sent).
-
-The terms in use (up to 100) go to the engine as recognition hints: Deepgram's `keyterm`, Moonshine's key terms, Whisper's prompt and hotwords. Only the list of terms is sent, never the documents. The engines still write what was said: a term is never added just because it's on the list. Terms help spelling. They can't remove room noise or make every accent work, and a mic close to the professor helps more than any list.
-
-Scanned PDFs (pictures of pages) have no text. Lost says so and doesn't do OCR; paste the key terms instead.
-
-During class the professor can double-click a transcript line to fix it. The original words are kept and shown when hovering over the "edited" tag.
-
-## Testing the engines
-
-`node eval/compare.mjs` (Mac only) makes test audio with five macOS voices (US, UK, Indian, Australian, Irish), clean and with background talk, and compares each engine with and without course terms. It writes `eval/results.md`. The voices are synthetic, so real lecture audio will do worse; use it to compare settings.
-
-## After-class summaries (Claude)
-
-When the professor ends class, Claude Haiku 5.5 reads the whole transcript, plus any course files ticked "Use for this lecture", and writes:
-
-- for every student, a summary of the class in the order it was taught;
-- for the professor, a short note on where and why the class got lost, and for each lost moment what the explanation left out (quoting the professor), a way to re-teach it next class, and the catch-up the students who tapped will get;
-- for each student who tapped, a plain explanation of their moment and a practice question.
-
-The professor reads it and presses Send. Students who are still confused after their catch-up can say so, and the count shows on the professor's report.
-
-There are two ways to reach Claude. If `ANTHROPIC_API_KEY` is in `.env`, Lost uses the Anthropic API, which is paid per call. Otherwise, if Claude Code is installed and signed in, Lost runs `claude -p` on that sign-in, which costs nothing extra. It runs with no tools from an empty folder, so it only sees the lecture. `LOST_AI=api`, `cli` or `off` forces one.
-
-Without either, the app still works: the report shows what was said at each moment and students get the transcript instead of a summary.
-
-## Running a class
-
-1. Professor clicks Start class. The mic turns on, the transcript fills in (from Deepgram or the local speech model, if set up), and the professor's sound is shared for students who aren't in the room. If the mic fails, type into the box under the transcript.
-2. Students tap I'm lost and keep listening. The button confirms with "Marked. You and 2 others."
-3. Students can tap Show transcript to read what has been said so far. It stays hidden until they open it.
-4. Students who aren't in the room tap Listen to class. The sound goes through the Lost server, about 2 seconds behind, so it works across any two networks.
-5. The counter at the bottom left turns gold when 10% or more of the class tapped in the last 90 seconds.
-6. Professor clicks End class. The report groups taps that came within 45 seconds of each other into one moment, and shows what was said in the 90 seconds before.
-7. Professor reads it and clicks Send summaries to students. Each student only gets the moments they tapped. They can answer "Still confused" or "This didn't help", and those counts show up in the report.
-
-## Demo mode
-
-The yellow FAKE DATA panel is for loud rooms and for testing alone. "Play sample lecture" types a short recursion lecture into the transcript. "+10 fake students" and "5 fake taps now" add made-up students. Say out loud in the demo when you use it.
-
-## How it handles the problems we listed
-
-| Problem | What the app does |
+| Variable | What it does |
 |---|---|
-| Students tap late | Each moment covers the 90 seconds before the first tap |
-| One student spams the button | One tap per student every 20 seconds counts |
-| "3 lost" means nothing without class size | The counter shows the share of the class, and alerts at 10% |
-| Reading in class makes students more lost | The transcript stays hidden unless the student opens it, and the summary comes after class |
-| Professors won't write extra material | Claude drafts it, the professor reads and sends |
-| Professors fear the data | Students are anonymous, and student ids never reach the professor screen |
-| Wi-Fi drops | The page reconnects by itself and keeps the student's id |
+| `ANTHROPIC_API_KEY` | AI through the Anthropic API (Claude Haiku 5.5 by default, `LOST_MODEL` to change). Without it Lost uses Claude Code's `claude -p` if installed, otherwise AI is off. `LOST_AI=api\|cli\|off` forces one. |
+| `DEEPGRAM_API_KEY` | Deepgram Nova-3 transcription. Without it: Moonshine on the laptop (Python setup), else Chrome speech recognition. `TRANSCRIBER=deepgram\|moonshine\|whisper\|off`. |
+| `PUBLIC_URL` | The server's public https address. Used for the Canvas OAuth redirect and for join links and QR codes. |
+| `CANVAS_CLIENT_ID`, `CANVAS_CLIENT_SECRET` | Canvas developer key for USM's Canvas. Turns on "Sign in with Canvas". |
+| `CANVAS_DEV_TOKEN` | Testing only: the developer's own Canvas access token. |
+| `PROF_SIGNUP_CODE` | Invite code needed to create a professor account. Empty means professor sign-up is off. |
+| `LOST_DEMO` | `1` turns on demo accounts and sample Canvas data. On by default, off when `NODE_ENV=production`. |
+| `LOST_SECRET` | 64 hex characters that encrypt stored Canvas tokens. Generated into `data/secret.key` if unset. |
+| `PORT`, `LOST_DATA`, `LOST_DB` | Port (3000), data folder (`./data`), database file (`data/lost.db`). |
 
-## Limits right now
+## Demo walkthrough
 
-- Everything is in memory. Restarting the server or clicking New class wipes the class.
-- One class at a time per server.
-- Speech-to-text is Chrome's built-in one. It struggles with accents and noise; Deepgram would be the upgrade.
-- No slide upload yet, so recaps of board-heavy math lectures will be weak.
+With demo mode on, the sign-in page lists five seeded accounts with one-click buttons. They are marked as demo accounts everywhere, and every course and file they touch is labelled "Demo Canvas (sample data)". Password for all of them: `lost-demo-2026`.
 
-## Files
+| Account | Role | Starting point |
+|---|---|---|
+| Dr. Maya Rivera | Professor | Three courses already imported and synced from demo Canvas |
+| Dr. Daniel Okafor | Professor | New: goes through onboarding |
+| Jordan Lee | Student | In CSC 311-001 and CSC 202 through demo Canvas |
+| Sam Patel | Student | In nothing yet: joins with a code or QR |
+| Riley Chen | Student | In CSC 311-002, the other section |
 
-| File | What it does |
+Professor, on a laptop:
+
+1. Sign in as Dr. Maya Rivera. Three course cards show their sync status.
+2. Open CSC 311, then Materials: the answer key, the instructor notes and a hidden quiz draft are "Professor only", following their Canvas state.
+3. Back on Class, pick section 001, type a topic, and press Set up class. The join code and QR code appear.
+4. Press Start class. Speak, type lines, or open "Setup and diagnostics" and press Play sample lecture (those lines are stored and shown as "sample").
+
+Student, on a phone:
+
+5. Sign in as Jordan Lee. The live banner says CSC 311 is live. Tap it.
+6. Tap I'm lost. Pick the line that lost you (or keep "Explain the current topic"). The help card has A Explanation, B Context and C Flow of the discussion, with the transcript times and slide numbers it used.
+7. Answer the quick check if one appears, press Still confused for another angle, or Check my understanding for a new example. Press Catch me up to now to see what was said while you were reading.
+
+Back to the professor:
+
+8. The tapped line is gold in the transcript. Press End class (twice, to confirm). Lost finishes the transcript, writes the summary in the background and publishes it.
+9. The report shows when taps happened, taps and different students as separate numbers, resolved and unresolved counts, and each moment with what was being said and an AI topic label marked "inferred" with its evidence.
+
+Student again: the bell shows a notification. The class page has the shared summary and "Your moments": where you got lost, the explanation you got, a review question for anything still open, and an office-hours question you can edit and copy.
+
+To see joining by code, sign in as Sam Patel and enter the code from the professor's screen, or scan the QR code. To see onboarding, sign in as Dr. Daniel Okafor.
+
+## How it works
+
+| Part | File |
 |---|---|
-| `server.js` | The whole backend: class state, taps, grouping, after-class Claude summaries, live updates |
-| `public/prof.html` | Professor screen: transcript, counter, timeline, report |
-| `public/student.html` | Student screen: join, button, catch-up |
-| `public/style.css` | Styles for both |
+| HTTP server, routes and every access check | `server.js` |
+| SQLite schema | `migrations/001_init.sql` (runs automatically) |
+| Accounts, sessions, CSRF, token encryption | `lib/auth.js` |
+| Canvas OAuth, adapters, import and sync | `lib/canvas.js`, sample data in `lib/demo-canvas.js` |
+| Text extraction, passages, retrieval (SQLite FTS5) | `lib/materials.js`, `extract.py` |
+| Live runtime: audio relay, transcript lines, gaps | `lib/live.js`, speech engines in `engines.js` |
+| Help card, diagnostic, checks, catch-up | `lib/help.js` |
+| AI provider boundary and output validation | `lib/ai.js` |
+| Durable jobs, summaries, analytics | `lib/jobs.js`, `lib/summary.js` |
+| Pages | `public/` (no framework, no inline scripts) |
+
+Security. Passwords are hashed with scrypt. Sign-in is an HttpOnly, SameSite=Lax cookie; only a hash of the token is stored. Every request that changes something needs the session's CSRF token in a header. Each professor route checks that the course belongs to that professor; each student route checks the student is enrolled in that section, and each event or check belongs to that student. Choosing "Professor" at sign-up does nothing without the invite code, and a professor account still sees only its own courses. API keys and Canvas tokens stay on the server; Canvas tokens are encrypted at rest.
+
+Course materials. A material is a Canvas file or page, an upload, or pasted notes. Its text is split into passages labelled with where they came from ("Slide 4", "Page 2", a page heading). Canvas items that are unpublished, hidden, locked or in a hidden folder are stored as professor-only. Student answers and citations only ever read student-visible passages, and never PowerPoint speaker notes. A professor can make an item stricter than Canvas, not looser. Sync downloads only items whose Canvas timestamp changed, updates them in place, and marks items that left Canvas as removed (their text is deleted so it can't be cited).
+
+AI. Every request gets the transcript around the student's moment and up to three student-visible passages, each with an id (`L12`, `P34`). The model has to cite those ids. Lost checks every reply against a JSON schema, then removes any citation that wasn't in the evidence, relabels an example as "written by the AI" if its source doesn't check out, and drops a "next idea" that wasn't actually said after the confusing line. Transcript and materials go in as reference data, never as instructions. Identical requests (double clicks) share one call. Timeouts, rate limits and outages fall back to the transcript excerpt and the matching course passages, with the reason shown.
+
+End of class. Ending stops new audio, waits for the speech engine's last words, closes the session and queues a summary job in SQLite. The job runs in the background, retries with backoff up to four times, and survives a restart. Re-running it can't publish twice: the summary is one row per class and notifications are unique per person and class. The professor sees pending, failed (with Try again) or published. The shared summary never contains student questions; each student's own moments are added only on their page.
+
+Privacy in the report. Taps and different students are separate numbers. When fewer than three students tapped in a moment, Lost hides the breakdown by category and resolution, because it could point at one person. AI-drafted clarifications and suggestions are only made when the professor asks, and Lost never sends or publishes them.
+
+## Canvas at USM
+
+USM's Canvas is `https://usm.instructure.com` (checked 2026-11-06: it redirects to `/login/saml`, USM's single sign-on). `canvas.usm.edu` is a USM page that links there, and `usm.canvas.com` does not exist.
+
+Lost uses the Canvas REST API with OAuth 2, as Canvas's documentation describes (https://canvas.instructure.com/doc/api/file.oauth.html). For Instructure-hosted Canvas, that page says developer keys "are issued by the admin of the institution", so a professor can't set this up alone. To turn it on at USM:
+
+1. Ask USM's Canvas administrators (through ITech) for an API developer key for Lost. Give them the redirect URI `https://<your server>/api/canvas/callback` and the scopes Lost reads: courses, sections, enrollments, files, folders, pages and modules.
+2. Put the key in `CANVAS_CLIENT_ID` and `CANVAS_CLIENT_SECRET`, and the server's https address in `PUBLIC_URL`.
+3. Restart. "Sign in with Canvas" turns on for professors and students.
+
+Canvas's documentation also says asking other users to generate and paste personal tokens breaks its API policy, so Lost has no such field. `CANVAS_DEV_TOKEN` is only for the developer to test the connector against their own account.
+
+An LTI 1.3 install (Lost opened from inside Canvas) would also need the administrators: Canvas's documentation says LTI service tokens work only where the tool has been deployed. It isn't built.
+
+The real Canvas connector has not been run against usm.instructure.com, because there is no developer key. It is covered by the same import and sync code paths the demo adapter uses, and by tests with fake adapters for failures, partial failures, removals and repeated syncs.
+
+## Tests
+
+`npm test` runs 17 end-to-end tests against a real server on a random port, with an in-memory database, the demo Canvas fixtures and a deterministic fake AI. They cover: a professor with three courses and another professor who can't see them; onboarding import without duplicates; students joining the right section and being refused a second section; cross-course, cross-student, wrong-role, missing-CSRF and signed-out access; professor-only Canvas content kept out of retrieval and out of the AI prompt; repeated, failed, partial and removing syncs; the full help flow with citation cleaning; several students at once and duplicate requests sharing one AI call; the AI rate-limited or off; transcript gaps and thin evidence; ending class mid-request; summary after a simulated crash with no duplicate notifications; summary failure then retry; resolution counts; resuming instead of duplicating a session; join links and redirects; the help rate limit.
+
+Tested by hand on 2026-11-06, not in `npm test`: the live help flow and the end-of-class summary against the real Claude Haiku 5.5 API (explanation in about 6 seconds, re-explanation and catch-up in 3 to 4), and the professor and student pages in headless Chromium at 1280 px, iPhone 13 (390 px) and 320 px, including reaching I'm lost by keyboard. No sideways scrolling at any of those widths. Not tested: real Canvas, Deepgram in a real room, screen readers.
+
+## Limits
+
+- One speech-engine stream per server: the first live class that sends audio gets Deepgram or Moonshine, other live classes at the same time use Chrome speech recognition on the professor's laptop (the screen says so).
+- Live pages poll every second. That works through the Cloudflare tunnel; it isn't built for hundreds of concurrent classes.
+- Retrieval is keyword search (SQLite FTS5), not embeddings. Scanned PDFs need OCR, which Lost doesn't do.
+- Email and password accounts have no email verification or password reset yet.
+- Rate limits are in memory and reset on restart.
+
+## What production needs
+
+- Real sign-in through USM single sign-on (SAML or OpenID Connect through USM ITech), or Canvas OAuth as the login, instead of local passwords.
+- The Canvas developer key above, approved by USM.
+- HTTPS hosting with `PUBLIC_URL` set, `NODE_ENV=production`, `LOST_DEMO=0`, a fixed `LOST_SECRET`, and backups of the database.
+- A review of FERPA obligations for confusion data and transcripts, and a retention policy.
