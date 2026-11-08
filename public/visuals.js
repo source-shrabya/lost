@@ -34,14 +34,15 @@
     // Layout rules that keep labels apart whatever positions the AI chose: region names along the top
     // edge, mark labels under or over their dot (alternating when two are close), line names in two
     // staggered rows under the surface, and arrow labels in their own rows under those.
-    const W = 340, left = 12, right = W - 12, top = v.direction ? 34 : 14, bottom = top + (v.frame === "strip" && !v.marks.length ? 70 : 118);
+    // Region names sit in a row above the surface, so a rink's rounded corners never cut them off.
+    const W = 340, left = 12, right = W - 12, top = (v.direction ? 34 : 14) + (v.regions.length ? 30 : 0), bottom = top + (v.frame === "strip" && !v.marks.length ? 70 : 118);
     const x = (at) => left + (at / 100) * (right - left);
     const clip = id("clip"), arrowId = id("arr");
     const rx = v.frame === "rink" ? 44 : v.frame === "field" ? 8 : 4;
     const regions = v.regions.map((r, i) => {
       const w = x(r.to) - x(r.from), lines = wrap(r.label, Math.max(6, Math.floor(w / 6.4)));
       return `<rect x="${x(r.from)}" y="${top}" width="${w}" height="${bottom - top}" class="${i % 2 ? "v-region-b" : "v-region-a"}"/>
-        <text x="${(x(r.from) + x(r.to)) / 2}" y="${top + 15}" class="v-rlabel" text-anchor="middle">${tspans(lines.slice(0, 2), (x(r.from) + x(r.to)) / 2, 12)}</text>`;
+        <text x="${(x(r.from) + x(r.to)) / 2}" y="${top - (Math.min(2, lines.length) === 2 ? 18 : 6)}" class="v-rlabel" text-anchor="middle">${tspans(lines.slice(0, 2), (x(r.from) + x(r.to)) / 2, 12)}</text>`;
     }).join("");
     const lineRow0 = bottom + 15;
     const lines = v.lines.map((l, i) => {
@@ -65,7 +66,10 @@
     const marks = v.marks.map((m) => {
       const p = pos.get(m.id), anchor = p.x < left + 70 ? "start" : p.x > right - 70 ? "end" : "middle";
       const tx = anchor === "start" ? Math.max(left + 4, p.x - 6) : anchor === "end" ? Math.min(right - 4, p.x + 6) : p.x;
-      return `<circle cx="${p.x}" cy="${p.y}" r="6" class="v-mark"/><text x="${tx}" y="${above.has(m.id) ? p.y - 11 : p.y + 19}" class="v-mlabel" text-anchor="${anchor}">${esc(m.label)}</text>`;
+      const shape = m.shape === "puck" ? `<ellipse cx="${p.x}" cy="${p.y}" rx="8" ry="4.5" class="v-puck"/>`
+        : m.shape === "player" ? `<circle cx="${p.x}" cy="${p.y}" r="9" class="v-player"/><circle cx="${p.x}" cy="${p.y}" r="3" class="v-player-dot"/>`
+        : `<circle cx="${p.x}" cy="${p.y}" r="6" class="v-mark"/>`;
+      return `${shape}<text x="${tx}" y="${above.has(m.id) ? p.y - 11 : p.y + 19}" class="v-mlabel" text-anchor="${anchor}">${esc(m.label)}</text>`;
     }).join("");
     const arrowRow0 = lineRow0 + (v.lines.length > 1 ? 28 : v.lines.length ? 14 : 0) + 6;
     const arrows = v.arrows.map((a, i) => {
@@ -80,7 +84,7 @@
       <defs><clipPath id="${clip}"><rect x="${left}" y="${top}" width="${right - left}" height="${bottom - top}" rx="${rx}"/></clipPath>
         <marker id="${arrowId}" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="v-arrowhead"/></marker></defs>
       ${v.direction ? `<text x="${left}" y="16" class="v-dir">${esc(v.direction)} →</text>` : ""}
-      <g clip-path="url(#${clip})">${regions}</g>
+      <g clip-path="url(#${clip})">${regions.replace(/<text[\s\S]*?<\/text>/g, "")}</g>${(regions.match(/<text[\s\S]*?<\/text>/g) || []).join("")}
       <rect x="${left}" y="${top}" width="${right - left}" height="${bottom - top}" rx="${rx}" class="v-frame"/>
       ${lines}${arrows}${marks}
     </svg>`;
@@ -151,8 +155,20 @@
     return figure(v, `<dl class="v-inputs">${v.inputs.map((i) => `<div><dt>${esc(i.label)}</dt><dd>${esc(num(i.value))}${i.unit ? ` ${esc(i.unit)}` : ""}</dd></div>`).join("")}</dl>
       <ol class="v-calc" id="${cid}">${rows}</ol>
       ${v.steps.length > 1 ? `<div class="v-ctl"><button type="button" data-act="calc" data-for="${cid}">Next step</button><button type="button" class="quiet" data-act="calc-all" data-for="${cid}">Show all</button></div>` : ""}
+      ${sequence(v)}
       <p class="v-result">Result: <b>${esc(num(v.result))}${v.result_unit ? ` ${esc(v.result_unit)}` : ""}</b> <span class="v-note">calculated by Lost</span></p>
       ${v.mismatch ? `<p class="v-warn">The AI's own answer (${esc(num(v.stated))}) didn't match this calculation, so the calculated value is shown.</p>` : ""}`);
+  }
+
+  // A short bar sequence under a calculation whose steps are a changing amount (a balance year by year).
+  // Heights come from the values Lost computed, never from the AI.
+  function sequence(v) {
+    const vals = v.steps.map((s) => s.value);
+    if (vals.length < 3 || !vals.every((x) => Number.isFinite(x) && x > 0)) return "";
+    const max = Math.max(...vals), W = 300, H = 96, bw = Math.min(46, (W - 10) / vals.length - 8);
+    const bars = vals.map((x, i) => { const h = Math.max(3, (x / max) * (H - 30)), bx = 6 + i * (bw + 8);
+      return `<rect x="${bx}" y="${H - 16 - h}" width="${bw}" height="${h}" rx="3" class="v-bar"/><text x="${bx + bw / 2}" y="${H - 20 - h}" class="v-tick" text-anchor="middle">${esc(num(x))}</text><text x="${bx + bw / 2}" y="${H - 3}" class="v-tick" text-anchor="middle">${i + 1}</text>`; }).join("");
+    return `<svg viewBox="0 0 ${W} ${H}" class="v-svg v-seq" role="img" aria-label="Bars for each step: ${esc(vals.map(num).join(", "))}">${bars}</svg>`;
   }
 
   // ---------- market: schematic supply and demand with one shift ----------
@@ -187,7 +203,7 @@
       <defs><marker id="${arrowId}" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="v-arrowhead"/></marker></defs>
       <line x1="${x0}" x2="${x0}" y1="${y0}" y2="${y1}" class="v-axis"/><line x1="${x0}" x2="${x1}" y1="${y1}" y2="${y1}" class="v-axis"/>
       <text x="${(x0 + x1) / 2}" y="${H - 8}" class="v-axlabel" text-anchor="middle">${esc(v.x_label)} →</text>
-      <text transform="translate(13 ${(y0 + y1) / 2}) rotate(-90)" class="v-axlabel" text-anchor="middle">${esc(v.y_label)} →</text>
+      <text transform="translate(17 ${(y0 + y1) / 2}) rotate(-90)" class="v-axlabel" text-anchor="middle">${esc(v.y_label)} →</text>
       ${curves.join("")}${eqp(v.before, 0)}${v.after ? eqp(v.after, 1) : ""}${shiftArrow}${labels.join("")}
     </svg>`;
     const word = (w) => (w === "up" ? "rises" : w === "down" ? "falls" : "stays the same");
@@ -219,7 +235,15 @@
       ${v.breaks_down ? `<p class="v-breaks"><b>Where it breaks down:</b> ${esc(v.breaks_down)}</p>` : ""}`, { note: "An analogy, not the real thing" });
   }
 
-  const RENDER = { zones, decision: (v) => layered(v, { decision: true }), concept_map: (v) => layered(v), tree: (v) => layered(v), process: processV, cause_effect: causeEffect, comparison, calculation, market, bit_grid: bitGrid, analogy };
+  // Place values: the digits under their places, the ones that count lit, the sum computed by Lost.
+  function placeValue(v) {
+    const cells = v.places.map((p) => `<td class="${p.value ? "pv-on" : ""}">${esc(p.digit)}</td>`).join("");
+    return figure(v, `<table class="pv"><caption class="visually-hidden">${esc(v.digits)} in base ${v.base}</caption>
+      <tr class="pv-w">${v.places.map((p) => `<th scope="col">${esc(num(p.weight))}</th>`).join("")}</tr><tr class="pv-d">${cells}</tr></table>
+      <p class="pv-sum">${v.places.filter((p) => p.value).map((p) => `<span>${p.value > 1 ? `${esc(p.digit)}×` : ""}${esc(num(p.weight))}</span>`).join(" + ") || "0"} = <b>${esc(num(v.total))}</b> <span class="v-note">calculated by Lost</span></p>`);
+  }
+
+  const RENDER = { place_value: placeValue, zones, decision: (v) => layered(v, { decision: true }), concept_map: (v) => layered(v), tree: (v) => layered(v), process: processV, cause_effect: causeEffect, comparison, calculation, market, bit_grid: bitGrid, analogy };
   L.visual = (v) => {
     if (!v || !RENDER[v.type]) return "";
     try { return RENDER[v.type](v); }
@@ -242,39 +266,41 @@
     example: p.explanation?.example?.text ? { ...p.explanation.example, why: "" } : null, terms: p.explanation?.terms || [],
     connection: p.context?.text ? { text: p.context.text, sources: [] } : null, qualifications: [], provenance: [], enough: p.enough, clarify: p.clarify,
   });
-  const exampleLabel = (ex) => ex.origin === "lecture" ? `Your professor's example${ex.source ? ` (${fmt(ex.source.t)})` : ""}` : ex.origin === "materials" ? "From the course notes" : "Picture this";
+  const exampleLabel = (ex) => ex.origin === "lecture" ? `Your professor's example${ex.source ? ` (${fmt(ex.source.t)})` : ""}` : ex.origin === "materials" ? "From the course notes" : "Example (made up by the AI)";
 
-  // The lesson card. Up front: the question, a hook, the idea in one line, a picture and an example.
-  // Everything else (why, terms, caveats, sources, warnings in full) waits behind "More".
+  // The lesson card. Up front: the question (as the panel title), a hook, the idea in one line, one
+  // picture, an example, and where it fits in class. "Explain more" holds the rest; "Sources" opens on demand.
   L.lesson = (raw, { kicker = "", headingLevel = 3, showTitle = true } = {}) => {
     const p = upgrade(raw), h = `h${headingLevel}`;
     const all = [p.takeaway, p.explanation, p.connection, ...(p.qualifications || []), ...(p.rule ? [p.rule.what_happened, p.rule.what_next, ...p.rule.when_differs] : [])].filter(Boolean).flatMap((c) => c.sources || []);
     const seen = new Set(), sources = all.filter((s) => (seen.has(s.id) ? false : seen.add(s.id)));
-    const shaky = sources.some((s) => s.flags?.length) || !!p.uncertainty || (p.provenance || []).length > 0;
+    const shaky = sources.filter((s) => s.flags?.length).length;
     const more = [
       claim(p.explanation, "lesson-body"),
       p.terms?.length ? `<dl class="lesson-terms">${p.terms.map((t) => `<div><dt>${esc(t.term)}</dt><dd>${esc(t.definition)}</dd></div>`).join("")}</dl>` : "",
       p.qualifications?.length ? `<div class="lesson-quals"><p class="lesson-label">Keep in mind</p>${p.qualifications.map((c) => claim(c)).join("")}</div>` : "",
-      p.connection ? `<div class="lesson-connect"><p class="lesson-label">Where this fits today</p>${claim(p.connection)}</div>` : "",
-      p.uncertainty || (p.provenance || []).length ? `<div class="lesson-shaky">${[p.uncertainty, ...(p.provenance || [])].filter(Boolean).map((n) => `<p>${esc(n)}</p>`).join("")}</div>` : "",
-      sources.length ? `<div><p class="lesson-label">Where this came from</p><ul class="src-list">${sources.map(sourceItem).join("")}</ul></div>`
-        : `<p class="note">Nothing in the lecture or notes backed this up, so treat it as background.</p>`,
     ].filter(Boolean).join("");
+    const notes = (p.provenance || []).map((n) => `<p class="src-note">${esc(n)}</p>`).join("");
     return `<article class="lesson">
       ${kicker ? `<p class="lesson-kicker">${esc(kicker)}</p>` : ""}
       ${showTitle && p.title ? `<${h} class="lesson-title">${esc(p.title)}</${h}>` : ""}
       ${!p.enough && p.clarify ? `<p class="clarify">${esc(p.clarify)}</p>` : ""}
       ${p.hook ? `<p class="lesson-hook">${esc(p.hook)}</p>` : ""}
       ${claim(p.takeaway, p.hook ? "lesson-takeaway small" : "lesson-takeaway")}
+      ${p.uncertainty ? `<p class="lesson-flag" role="note"><span class="unsure-mark" aria-hidden="true">!</span> ${esc(p.uncertainty)}</p>` : ""}
       ${p.visual ? L.visual(p.visual) : ""}
-      ${p.rule ? `<div class="rule-flow" role="group" aria-label="The rule">
+      ${p.rule ? `<div class="rule-flow" role="group" aria-label="The rule, with its exceptions as branches">
           <p class="rf-row"><span class="rf-k">If</span><span>${esc(p.rule.what_happened.text)}</span></p>
           <p class="rf-row"><span class="rf-k">Then</span><span>${esc(p.rule.what_next.text)}</span></p>
           ${p.rule.when_differs.map((c) => `<p class="rf-row rf-alt"><span class="rf-k">Unless</span><span>${esc(c.text)}</span></p>`).join("")}
         </div>` : ""}
       ${p.example ? `<div class="lesson-example"><p class="lesson-label">${exampleLabel(p.example)}</p><p>${esc(p.example.text)}</p></div>` : ""}
-      ${shaky ? `<p class="lesson-flag"><span class="unsure-mark" aria-hidden="true">!</span> Some of the audio was unclear here. Details under More.</p>` : ""}
-      ${more ? `<details class="lesson-more"><summary>More</summary><div class="lesson-more-body">${more}</div></details>` : ""}
+      ${p.connection?.text ? `<p class="lesson-connect-line"><span class="lesson-label">In class</span> ${esc(p.connection.text)}</p>` : ""}
+      <div class="lesson-foot">
+        ${more ? `<details class="lesson-more"><summary>Explain more</summary><div class="lesson-more-body">${more}</div></details>` : ""}
+        <details class="lesson-src"><summary>Sources${sources.length ? ` (${sources.length})` : ""}${shaky ? ` · ${shaky} unclear` : ""}</summary><div class="lesson-more-body">
+          ${notes}${sources.length ? `<ul class="src-list">${sources.map(sourceItem).join("")}</ul>` : `<p class="note">Nothing in the lecture or notes backed this up, so treat it as background.</p>`}</div></details>
+      </div>
     </article>`;
   };
 

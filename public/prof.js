@@ -19,6 +19,7 @@
       <div class="page-head"><h1>Your courses</h1><a class="button" href="#/onboarding">Add courses</a></div>
       ${courses.length ? `<ul class="course-grid">${courses.map((c) => `
         <li class="course-card">
+          ${Lost.courseArt(c.art, c.id)}
           <div class="cc-head"><span class="cc-code">${esc(c.code)}</span>${sourceBadge(c.source)}</div>
           <h2><a href="#/course/${c.id}">${esc(c.name)}</a></h2>
           <p class="note">${c.sections.map((s) => `${esc(s.name)} · ${s.students} student${s.students === 1 ? "" : "s"}`).join("<br>")}</p>
@@ -257,10 +258,15 @@
           <label for="tut">Tutoring link (https)</label><input id="tut" type="url" value="${esc(c.tutoring_url)}" placeholder="https://">
           <label for="terms">Course terms for the speech engine, one per line</label><textarea id="terms" rows="5">${esc(c.terms)}</textarea>
           <p class="note">Terms help the transcript spell course words. Only the terms are sent to the speech engine, not your files.</p>
+          <fieldset class="art-pick"><legend>Course card drawing</legend>
+            <label class="art-opt"><input type="radio" name="art" value=""${!c.artChosen ? " checked" : ""}> <span>Pick for me <span class="note">(now: ${esc((d.artChoices.find((a) => a.id === c.art) || {}).label || "General")})</span></span></label>
+            ${d.artChoices.map((a) => `<label class="art-opt"><input type="radio" name="art" value="${a.id}"${c.artChosen === a.id ? " checked" : ""}> <span class="art-icons">${a.icons.slice(0, 3).map(Lost.artIcon).join("")}</span><span>${esc(a.label)}</span></label>`).join("")}
+            <p class="note">Line drawings made for Lost. Students see them on their course card.</p>
+          </fieldset>
           <button class="primary">Save</button></form></section>`;
     $("#settings").onsubmit = async (e) => {
       e.preventDefault();
-      try { await api(`/api/prof/courses/${c.id}/settings`, { method: "POST", body: { office_hours_url: $("#oh").value, tutoring_url: $("#tut").value, terms: $("#terms").value } }); toast("Saved."); }
+      try { await api(`/api/prof/courses/${c.id}/settings`, { method: "POST", body: { office_hours_url: $("#oh").value, tutoring_url: $("#tut").value, terms: $("#terms").value, art: document.querySelector("input[name=art]:checked")?.value || "" } }); toast("Saved."); }
       catch (err) { toast(err.message, "error"); }
     };
   }
@@ -288,8 +294,20 @@
       </section>
       <div class="teach" id="teach">
         <section class="panel transcript-panel">
-          <div class="row spread"><h2>Transcript</h2><div class="row"><button id="mic" class="tool">Mic off</button><button id="showCode" class="tool">Show sign-in link</button><button id="endBtn" class="primary">End class</button></div></div>
+          <div class="mic-bar">
+            <button id="mic" class="micbtn" aria-pressed="false" aria-describedby="micHint" title="Turn microphone on or off (Space or M)">
+              <svg class="mic-ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/><path class="mic-slash" d="M4 4l16 16"/></svg>
+              <span class="mic-state" id="micState">Microphone off</span>
+            </button>
+            <p class="mic-hint" id="micHint"><kbd>Space</kbd> or <kbd>M</kbd> turns it on or off. Only this microphone is recorded, not computer audio.</p>
+            <div class="mic-side">
+              <button id="keysBtn" class="tool" aria-haspopup="dialog" title="Keyboard shortcuts (?)">Shortcuts <kbd>?</kbd></button>
+              <button id="showCode" class="tool" aria-haspopup="dialog">Sign-in link</button>
+              <button id="endBtn" class="danger" aria-haspopup="dialog">End class…</button>
+            </div>
+          </div>
           <p class="note warn" id="micErr" role="status"></p>
+          <div class="row spread"><h2>Transcript</h2></div>
           <div id="transcript" class="transcript" tabindex="0" aria-label="Transcript"></div>
           <p id="interim" class="interim"></p>
           <form id="typeForm" class="row"><label for="typed" class="visually-hidden">Type a line</label><input id="typed" placeholder="Mic not picking you up? Type a line and press Enter"><button>Add</button></form>
@@ -299,7 +317,20 @@
       <details class="panel diag"><summary>Setup and diagnostics</summary><div id="diag"></div>
         ${info.demo ? `<div class="demo-tools"><h3>Demo tools <span class="badge warn">sample text</span></h3><p class="note">Types a short sample lecture into the transcript. Those lines are stored as "sample", and the AI and the summary are told so. Say out loud that you're using it.</p><button id="sample">Play sample lecture</button></div>` : ""}
       </details>
-      <dialog id="codeDlg" class="code-dlg" aria-labelledby="codeDlgH"><h2 id="codeDlgH">Students sign in at</h2><p class="sign-code site-url">${esc(info.site.replace(/^https?:\/\//, ""))}</p><p>With their school email. No codes.</p><form method="dialog"><button class="primary">Close</button></form></dialog>`;
+      <dialog id="codeDlg" class="code-dlg" aria-labelledby="codeDlgH"><h2 id="codeDlgH">Students sign in at</h2><p class="sign-code site-url">${esc(info.site.replace(/^https?:\/\//, ""))}</p><p>With their school email. No codes.</p><form method="dialog"><button class="primary">Close</button></form></dialog>
+      <dialog id="endDlg" class="confirm-dlg" aria-labelledby="endDlgH" aria-describedby="endDlgP"><h2 id="endDlgH">End class for everyone?</h2>
+        <p id="endDlgP">Recording stops, students leave the live view, and Lost writes the class summary. To pause instead, turn the microphone off.</p>
+        <form method="dialog" class="row"><button value="stay" class="primary" autofocus>Keep teaching</button><button value="end" class="danger">End class</button></form></dialog>
+      <dialog id="keysDlg" class="confirm-dlg" aria-labelledby="keysDlgH"><h2 id="keysDlgH">Keyboard shortcuts</h2>
+        <dl class="keys-list">
+          <div><dt><kbd>Space</kbd> or <kbd>M</kbd></dt><dd>Turn the microphone on or off</dd></div>
+          <div><dt><kbd>T</kbd></dt><dd>Type a transcript line</dd></div>
+          <div><dt><kbd>L</kbd></dt><dd>Show the students' sign-in link</dd></div>
+          <div><dt><kbd>E</kbd></dt><dd>End class (asks first)</dd></div>
+          <div><dt><kbd>?</kbd></dt><dd>This list</dd></div>
+        </dl>
+        <p class="note">Shortcuts pause while you type, while a dialog is open, and when a focused button already uses the key. Each one has a button on screen too.</p>
+        <form method="dialog"><button class="primary" autofocus>Close</button></form></dialog>`;
 
     const paintPhase = () => {
       document.body.dataset.phase = S.status;
@@ -312,15 +343,37 @@
     $("#discard").onclick = async (e) => { if (!Lost.confirmButton(e.target, "Click again to discard")) return; await api(`/api/prof/sessions/${sid}/end`, { method: "POST" }); location.hash = `#/course/${info.course.id}`; };
     $("#startBtn").onclick = async () => { const r = await api(`/api/prof/sessions/${sid}/start`, { method: "POST" }); S.status = r.status; paintPhase(); startMic(); };
     $("#showCode").onclick = () => $("#codeDlg").showModal();
-    $("#endBtn").onclick = async (e) => {
-      if (!Lost.confirmButton(e.target, "Click again to end class")) return;
-      e.target.disabled = true; e.target.textContent = "Ending…";
-      await stopMic(true); // flush the last audio piece before ending
+    // Ending always goes through the dialog; nothing ends class in one keystroke.
+    const endClass = async () => {
+      const b = $("#endBtn"); b.disabled = true; b.textContent = "Ending…";
+      await stopMic(true); // send the audio already recorded, then end
       await api(`/api/prof/sessions/${sid}/end`, { method: "POST" });
       S.status = "ending"; paintPhase();
     };
+    $("#endBtn").onclick = () => $("#endDlg").showModal();
+    $("#endDlg").addEventListener("close", () => { if ($("#endDlg").returnValue === "end") endClass(); else $("#endBtn").focus(); $("#endDlg").returnValue = ""; });
+    $("#keysBtn").onclick = () => $("#keysDlg").showModal();
+    const anyDialog = () => !!document.querySelector("dialog[open]");
+    const onKey = (e) => {
+      if (S.status !== "live") return;
+      const act = LostKeys.shortcutFor(e, { dialogOpen: anyDialog(), map: { " ": "mic", m: "mic", "?": "keys", t: "type", l: "link", e: "end" } });
+      if (!act) return;
+      e.preventDefault(); // only now: Space scrolls the page unless it did something here
+      if (act === "mic") toggleMic();
+      if (act === "keys") $("#keysDlg").showModal();
+      if (act === "type") $("#typed").focus();
+      if (act === "link") $("#codeDlg").showModal();
+      if (act === "end") $("#endDlg").showModal();
+    };
+    document.addEventListener("keydown", onKey);
+    Lost.onLeave(() => document.removeEventListener("keydown", onKey));
+    // Signing out mid-class: the header's dialog asks what to do with the class and the mic.
+    Lost.signOutGuard = () => S.status === "live" ? { micOn: mic.listening, muteMic: () => stopMic(), endClass } : null;
+    Lost.onLeave(() => { Lost.signOutGuard = null; });
     $("#typeForm").onsubmit = async (e) => { e.preventDefault(); const t = $("#typed").value.trim(); if (!t) return; $("#typed").value = ""; await api(`/api/prof/sessions/${sid}/line`, { method: "POST", body: { text: t, origin: "typed" } }).catch((x) => toast(x.message, "error")); };
-    $("#mic").onclick = () => (mic.listening ? stopMic() : startMic());
+    let micBusy = false;
+    const toggleMic = async () => { if (micBusy) return; micBusy = true; try { await (mic.listening ? stopMic() : startMic()); } finally { micBusy = false; } };
+    $("#mic").onclick = toggleMic;
     $("#sample")?.addEventListener("click", async (e) => {
       if (S.status !== "live") { toast("Start the class first."); return; }
       e.target.disabled = true;
@@ -389,23 +442,27 @@
     }
 
     // ---------- mic: audio relay to the server, plus Chrome recognition when the server can't transcribe ----------
-    const mic = { listening: false, stream: null, rec: null, recog: null, chain: Promise.resolve(), err: "" };
+    const mic = { listening: false, stream: null, rec: null, recog: null, err: "",
+      sender: new LostKeys.MicSender((piece, first) => api(`/api/prof/sessions/${sid}/audio?first=${first ? 1 : 0}`, { method: "POST", raw: piece })) };
+    const paintMic = () => {
+      const on = mic.listening;
+      $("#mic").classList.toggle("on", on); $("#mic").setAttribute("aria-pressed", String(on));
+      $("#micState").textContent = on ? "Microphone on" : "Microphone off";
+      document.body.dataset.mic = on ? "on" : "off";
+      Lost.announce(on ? "Microphone on" : "Microphone off");
+    };
     const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
     async function startMic() {
       if (mic.listening) return;
       try { mic.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
       catch (e) { mic.err = `Mic blocked (${e.message}). Type lines below instead.`; $("#micErr").textContent = mic.err; return; }
       mic.listening = true; mic.err = ""; $("#micErr").textContent = "";
-      $("#mic").textContent = "Mic on"; $("#mic").classList.add("on");
+      paintMic();
       const type = window.MediaRecorder && MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "";
       if (type) {
         mic.rec = new MediaRecorder(mic.stream, { mimeType: type, audioBitsPerSecond: 32000 });
-        let first = true;
-        mic.rec.ondataavailable = (e) => {
-          if (!e.data.size) return;
-          const isFirst = first; first = false;
-          mic.chain = mic.chain.then(() => api(`/api/prof/sessions/${sid}/audio?first=${isFirst ? 1 : 0}`, { method: "POST", raw: e.data }).catch(() => {}));
-        };
+        mic.sender.start();
+        mic.rec.ondataavailable = (e) => { if (e.data.size) mic.sender.push(e.data); };
         mic.rec.start(1000);
       } else { mic.err = "This browser can't send audio to the server; use Chrome."; }
       syncRecognition(transcriberMode);
@@ -433,13 +490,17 @@
       if (!mic.listening) return;
       mic.listening = false;
       if (mic.recog) { const r = mic.recog; mic.recog = null; r.onend = null; r.stop(); }
+      // Muting: drop pieces not yet sent and stop the tracks at once. Ending: send what was recorded.
+      const sending = mic.sender.stop({ flush });
+      if (!flush) mic.stream?.getTracks().forEach((t) => t.stop());
       if (mic.rec && mic.rec.state !== "inactive") { const stopped = new Promise((ok) => (mic.rec.onstop = ok)); mic.rec.stop(); await stopped; }
-      if (flush) await mic.chain;
+      mic.sender.closed();
+      if (flush) await sending;
       mic.stream?.getTracks().forEach((t) => t.stop()); mic.stream = null; mic.rec = null;
-      api(`/api/prof/sessions/${sid}/audio`, { method: "DELETE" }).catch(() => {});
-      $("#mic").textContent = "Mic off"; $("#mic").classList.remove("on"); $("#interim").textContent = "";
+      await api(`/api/prof/sessions/${sid}/audio`, { method: "DELETE" }).catch(() => {});
+      paintMic(); $("#interim").textContent = "";
     }
-    if (S.status === "live") toast("Class is live. Press Mic to turn your microphone back on.");
+    if (S.status === "live") toast("Class is live. Press Space or the microphone button to turn it back on.");
     Lost.onLeave(() => stopMic());
   }
 

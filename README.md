@@ -43,6 +43,7 @@ All settings are environment variables, read from `.env`. Names only; never comm
 | `PROF_SIGNUP_CODE` | Invite code needed to create a professor account. Empty means professor sign-up is off. |
 | `LOST_DEMO` | `1` turns on demo accounts and sample Canvas data. On by default, off when `NODE_ENV=production`. |
 | `LOST_SECRET` | 64 hex characters that encrypt stored Canvas tokens. Generated into `data/secret.key` if unset. |
+| `LOST_OPEN_CLASSES` | A professor's email. Until a university connects Canvas, every student who signs in is put in all of that professor's classes. Empty means no automatic classes. |
 | `PORT`, `LOST_DATA`, `LOST_DB` | Port (3000), data folder (`./data`), database file (`data/lost.db`). |
 
 ## Demo walkthrough
@@ -120,9 +121,27 @@ An LTI 1.3 install (Lost opened from inside Canvas) would also need the administ
 
 The real Canvas connector has not been run against usm.instructure.com, because there is no developer key. It is covered by the same import and sync code paths the demo adapter uses, and by tests with fake adapters for failures, partial failures, removals and repeated syncs.
 
+## Classroom experience
+
+Sign-in is a school email, then the university. Students go straight in with no password; professors add their password. The university option is the name as text. USM publishes logo files at usm.edu/university-communications/university-logo.php, but that page says the university owns its logos and "reserves the right to review and monitor logo usage", and it says nothing about outside or student projects. So Lost shows no USM logo until University Communications approves one in writing. Lost is not affiliated with or endorsed by the university.
+
+Professor live screen: a large microphone button that reads "Microphone on" or "Microphone off". Space or M toggles it when the page has focus. The shortcuts ignore typing, open dialogs, held keys, Ctrl/Cmd/Alt combinations, and Space on a focused button. `?` opens the list of shortcuts, T focuses the type-a-line box, L shows the sign-in link and E opens the end-class dialog. Ending class always asks first. Muting drops audio pieces not yet sent, and the server refuses any piece that arrives after the mute (409), so nothing reaches the transcriber or the listeners. Ending class sends what was already recorded first. Lost records only the browser microphone, never computer audio.
+
+Student live screen: the transcript is the main surface. New lines never move a reader who scrolled up; a "Jump to live" button appears instead. Students tap a line, or I'm lost, to mark the moment. On a wide screen help opens beside the transcript and can be resized (drag or arrow keys) or minimized; on a phone it is a bottom sheet with "Back to live". "Got it" marks the moment understood, closes the panel and offers Undo. Closing or minimizing never marks anything understood. "My moments" reopens any moment and its help. Shortcuts: L for I'm lost, J to jump to live, Esc to minimize help, ? for the list. "Catch me up" summarises only what was said since the tap, and shows the lines themselves when fewer than 2 lines or 20 words were said.
+
+Help cards: the question, a short hook, the idea in one sentence, one picture when it helps, an example, and where it fits in class. "Explain more" and "Sources" open on demand. Pictures are drawn from checked specs with fixed SVG templates; the AI never sends markup. Types: rink or field zones (players, pucks, lines, regions), place values for number bases, worked calculations (with a bar sequence for changing balances), supply and demand, parity grids, decision branches, processes, comparisons, cause and effect, concept maps and analogies. Lost computes every number shown. A picture that fails the checks is left out and the card says so, with a button to try another explanation. A "misheard" warning is dropped when every line near the moment was typed rather than spoken.
+
+After class: a private "Your learning moments" list shows every moment, marked either "You said you got it" or "Still open", and an optional quiz of up to 3 questions with new examples. Quiz answers are stored apart from what the student marked and are not grades.
+
+Course cards carry a band of line drawings chosen from the course name, or picked by the professor in course settings. The drawings were made for this project (public/theme.js), so there are no outside image licences. No image-generation service is used; this repository never had a Cloudflare or FLUX integration.
+
+Theme: Bricolage Grotesque for headings, Atkinson Hyperlegible Next for reading text (both Google Fonts, SIL Open Font License). Light, dark or automatic, remembered per device. Sign out asks first. A professor signing out during a live class chooses between keeping the class open with the mic off, ending the class, or staying signed in. An expired session returns to sign-in with a note.
+
 ## Tests
 
-`npm test` runs 17 end-to-end tests against a real server on a random port, with an in-memory database, the demo Canvas fixtures and a deterministic fake AI. They cover: a professor with three courses and another professor who can't see them; onboarding import without duplicates; students joining the right section and being refused a second section; cross-course, cross-student, wrong-role, missing-CSRF and signed-out access; professor-only Canvas content kept out of retrieval and out of the AI prompt; repeated, failed, partial and removing syncs; the full help flow with citation cleaning; several students at once and duplicate requests sharing one AI call; the AI rate-limited or off; transcript gaps and thin evidence; ending class mid-request; summary after a simulated crash with no duplicate notifications; summary failure then retry; resolution counts; resuming instead of duplicating a session; join links and redirects; the help rate limit.
+`npm test` runs 25 end-to-end tests against a real server on a random port, with an in-memory database, the demo Canvas fixtures and a deterministic fake AI. They cover: a professor with three courses and another professor who can't see them; onboarding import without duplicates; students joining the right section and being refused a second section; cross-course, cross-student, wrong-role, missing-CSRF and signed-out access; professor-only Canvas content kept out of retrieval and out of the AI prompt; repeated, failed, partial and removing syncs; the full help flow with citation cleaning; several students at once and duplicate requests sharing one AI call; the AI rate-limited or off; transcript gaps and thin evidence; ending class mid-request; summary after a simulated crash with no duplicate notifications; summary failure then retry; resolution counts; resuming instead of duplicating a session; join links and redirects; the help rate limit; Space and M toggling once and staying out of typing, focused buttons, dialogs and held keys; muting dropping queued audio and the server refusing audio after a mute without ending class; Got it with Undo, closing help not resolving, and moments private to their student; school-email sign-in; course art choices.
+
+Tested in headless Chromium on 2026-11-08 against the real Claude Haiku 5.5 API, with a fake microphone (not in `npm test`): the whole journey at 1280 px and 390 px, 24 checks, all passing. Real-AI cards drew a picture for hockey icing and offside (player and puck against the blue line), loanable funds, compound interest, two-dimensional parity and binary place values. Not tested: real Deepgram audio in a room, real Canvas, screen readers, Safari.
 
 Tested by hand on 2026-11-06, not in `npm test`: the live help flow and the end-of-class summary against the real Claude Haiku 5.5 API (explanation in about 6 seconds, re-explanation and catch-up in 3 to 4), and the professor and student pages in headless Chromium at 1280 px, iPhone 13 (390 px) and 320 px, including reaching I'm lost by keyboard. No sideways scrolling at any of those widths. Not tested: real Canvas, Deepgram in a real room, screen readers.
 
@@ -133,6 +152,9 @@ Tested by hand on 2026-11-06, not in `npm test`: the live help flow and the end-
 - Retrieval is keyword search (SQLite FTS5), not embeddings. Scanned PDFs need OCR, which Lost doesn't do.
 - Email and password accounts have no email verification or password reset yet.
 - Rate limits are in memory and reset on restart.
+- Student sign-in has no password: anyone who types a student's email gets that account. Fine for a demo, not for real use; university single sign-on replaces it.
+- The AI places marks on rink and field pictures. Lost checks that they are in range, not that they match the rule, so a picture can be loose (for example a puck drawn just past the line).
+- No USM logo (see Classroom experience). No image generation.
 
 ## What production needs
 

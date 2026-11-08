@@ -30,6 +30,7 @@
       ${live.map((c) => `<a class="live-banner" href="#/live/${c.active.id}"><span class="dot live" aria-hidden="true"></span><span><b>${esc(c.code)} is live now</b><span>${esc(c.section_name)} · tap to enter today's class</span></span></a>`).join("")}
       ${courses.length ? `<ul class="course-grid">${courses.map((c) => `
         <li class="course-card">
+          ${Lost.courseArt ? Lost.courseArt(c.art, c.id) : ""}
           <div class="cc-head"><span class="cc-code">${esc(c.code)}</span>${c.source === "demo" ? `<span class="badge warn">Demo course</span>` : ""}</div>
           <h2><a href="#/course/${c.id}">${esc(c.name)}</a></h2>
           <p class="note">${esc(c.section_name)}</p>
@@ -105,81 +106,157 @@
   }
 
   // ================= live class =================
+  // The transcript is the main reading surface and always stays on screen. Help opens beside it on a
+  // wide screen (resizable, can be minimized) and as a bottom sheet on a phone. New lines never move
+  // the student's scroll position; a "Jump to live" button appears instead.
   async function liveClass(app, [sid]) {
-    const st = { status: "", now: "", lines: [], since: 0, rev: -1, transcriptOpen: false, ai: true, clock: 0, lastIdx: null, gaps: [] };
-    const H = { ev: null, phrases: [], picked: null, cards: [], busy: false, catchups: 0, retries: 0, seq: 0 };
+    const st = { status: "", now: "", lines: [], since: 0, rev: -1, ai: true, clock: 0, lastIdx: null, mine: [], rendered: 0, unseen: 0 };
+    const H = { ev: null, phrases: [], picked: null, cards: [], busy: false, catchups: 0, tries: {}, seq: 0, state: "closed", title: "" };
+    const helpW = (() => { try { return Number(localStorage.getItem("lost-help-w")) || 420; } catch { return 420; } })();
     app.innerHTML = `
-      <div class="room">
-        <header class="room-top">
-          <div><p class="crumb"><a href="#/">Your classes</a></p><h1 id="roomTitle">Class</h1></div>
-          <span class="status"><span class="dot" id="dot"></span><span id="statusText">Connecting…</span></span>
+      <div class="live2" id="live2" data-help="closed" style="--help-w:${helpW}px">
+        <header class="live-top">
+          <div class="live-title"><p class="crumb"><a href="#/">Your classes</a></p><h1 id="roomTitle">Class</h1></div>
+          <div class="live-status" role="status"><span class="dot" id="dot"></span><span id="statusText">Connecting…</span><b id="clock" class="clock"></b></div>
+          <div class="live-tools">
+            <button id="momentsBtn" class="tool" aria-haspopup="dialog" aria-label="My moments"><span class="mlabel">My moments</span> <span id="momentsN" class="count" hidden></span></button>
+            <button id="listen" class="tool" disabled>Listen</button>
+            <button id="skeys" class="tool" aria-haspopup="dialog" title="Keyboard shortcuts (?)"><kbd>?</kbd><span class="visually-hidden">Keyboard shortcuts</span></button>
+          </div>
         </header>
-        <div class="room-main">
-          <button class="lostbtn" id="lost" disabled><span class="lost-main">I'm lost</span><span class="lost-sub">Anonymous. Class keeps going.</span></button>
-          <p id="ack" class="ack" aria-live="polite"></p>
-          <div class="tools"><button id="listen" class="tool" disabled>Listen to class</button><button id="showT" class="tool" aria-expanded="false" aria-controls="tpanel">Show transcript</button></div>
-          <p id="listenNote" class="note center"></p>
-          <audio id="relayAudio"></audio>
-        </div>
-        <div class="room-side">
-          <section id="help" class="help-card" hidden aria-labelledby="helpH"></section>
-          <section id="tpanel" class="panel" hidden><h2>Transcript</h2><div id="tlines" class="tlines"></div></section>
-        </div>
+        <section class="tcol" aria-labelledby="tH">
+          <h2 id="tH" class="visually-hidden">Live transcript</h2>
+          <div id="tlines" class="tlines2" tabindex="0" aria-label="Live transcript. Tap a line that lost you."></div>
+          <button id="jump" class="jump" hidden>New lines below · Jump to live</button>
+          <div class="lostbar">
+            <button class="lostbtn2" id="lost" disabled aria-describedby="ack"><span class="lost-main">I'm lost</span><span class="lost-sub">Anonymous. Class keeps going.</span></button>
+            <p id="ack" class="ack" aria-live="polite"></p>
+          </div>
+        </section>
+        <aside class="hcol" id="hcol" aria-labelledby="helpH" hidden>
+          <div class="resizer" id="resizer" role="separator" aria-orientation="vertical" aria-label="Resize help panel" tabindex="0" aria-valuemin="300" aria-valuemax="760" aria-valuenow="${helpW}"></div>
+          <div class="sheet-head">
+            <h2 id="helpH" tabindex="-1">Help</h2>
+            <button class="quiet" id="minHelp" aria-label="Minimize help (Esc)">Minimize</button>
+            <button class="quiet" id="closeHelp" aria-label="Close help without marking it understood">Close</button>
+          </div>
+          <div id="help" class="help-body"></div>
+        </aside>
+        <button id="helpPill" class="help-pill" hidden></button>
+        <div id="snack" class="snack" role="status" hidden></div>
+        <audio id="relayAudio"></audio>
+        <p id="listenNote" class="visually-hidden" aria-live="polite"></p>
       </div>`;
+    const live2 = $("#live2"), box = $("#tlines");
+
+    // ---------- help panel states: open, minimized, closed ----------
+    const setHelp = (state) => {
+      H.state = state;
+      live2.dataset.help = state;
+      $("#hcol").hidden = state !== "open";
+      $("#helpPill").hidden = state !== "min";
+      if (state === "min") $("#helpPill").innerHTML = `<span class="pill-dot" aria-hidden="true"></span><span>Help: ${esc(H.title || "your moment")}</span><b>Open</b>`;
+    };
+    $("#minHelp").onclick = () => { setHelp("min"); $("#helpPill").focus(); };
+    $("#closeHelp").onclick = () => { setHelp("closed"); $("#lost").focus(); }; // stays open in My moments; not resolved
+    $("#helpPill").onclick = () => { setHelp("open"); $("#helpH").focus(); };
+
+    // resizable panel (pointer drag, or arrow keys on the handle)
+    const setW = (w) => { w = Math.max(300, Math.min(760, Math.round(w))); live2.style.setProperty("--help-w", `${w}px`); $("#resizer").setAttribute("aria-valuenow", w); try { localStorage.setItem("lost-help-w", w); } catch {} };
+    $("#resizer").addEventListener("pointerdown", (e) => {
+      const r = $("#resizer"); r.setPointerCapture(e.pointerId);
+      const move = (m) => setW(live2.getBoundingClientRect().right - m.clientX);
+      const up = () => { r.removeEventListener("pointermove", move); r.removeEventListener("pointerup", up); };
+      r.addEventListener("pointermove", move); r.addEventListener("pointerup", up);
+    });
+    $("#resizer").addEventListener("keydown", (e) => {
+      const w = Number($("#resizer").getAttribute("aria-valuenow"));
+      if (e.key === "ArrowLeft") { setW(w + 40); e.preventDefault(); }
+      if (e.key === "ArrowRight") { setW(w - 40); e.preventDefault(); }
+    });
+
+    // ---------- transcript: append only, never steal the scroll ----------
+    const nearBottom = () => box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+    const lineHtml = (l) => `<p class="tline${H.ev && (H.picked?.idx === l.idx) ? " picked" : ""}" data-idx="${l.idx}"><time>${fmt(l.t)}</time><span>${esc(l.text)}</span></p>`;
+    function paintLines(full) {
+      const stick = nearBottom();
+      const lines = st.lines.filter(Boolean);
+      if (full) { box.innerHTML = ""; st.rendered = 0; }
+      const fresh = lines.filter((l) => l.idx >= st.rendered);
+      $("#saying")?.remove();
+      if (!lines.length && !st.now) { box.innerHTML = `<p class="note empty-t" id="emptyT">${st.status === "live" ? "Listening… words show up here as your professor talks." : "Waiting for class to start."}</p>`; return; }
+      $("#emptyT")?.remove();
+      if (fresh.length) { box.insertAdjacentHTML("beforeend", fresh.map(lineHtml).join("")); st.rendered = Math.max(...lines.map((l) => l.idx)) + 1; }
+      if (st.now) box.insertAdjacentHTML("beforeend", `<p class="tline saying" id="saying"><time>now</time><span>${esc(st.now)}</span></p>`);
+      if (stick || full) { box.scrollTop = box.scrollHeight; st.unseen = 0; }
+      else if (fresh.length) st.unseen += fresh.length;
+      $("#jump").hidden = !st.unseen;
+    }
+    box.addEventListener("scroll", () => { if (nearBottom()) { st.unseen = 0; $("#jump").hidden = true; } }, { passive: true });
+    const jumpLive = () => { box.scrollTo({ top: box.scrollHeight, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); st.unseen = 0; $("#jump").hidden = true; };
+    $("#jump").onclick = jumpLive;
+    // Tapping a line marks it: "this is where I got lost".
+    box.addEventListener("click", async (e) => {
+      const p = e.target.closest(".tline[data-idx]"); if (!p || st.status !== "live" || H.busy) return;
+      if (window.getSelection()?.toString()) return; // they were selecting text
+      const ok = await tap(); if (!ok) return;
+      const idx = Number(p.dataset.idx);
+      H.phrases = H.phrases.some((x) => x.idx === idx) ? H.phrases : [...H.phrases, st.lines[idx]].filter(Boolean);
+      explain("phrase", idx);
+    });
 
     // ---------- tap ----------
-    $("#lost").onclick = async () => {
-      if (H.busy) return;
+    async function tap() {
+      if (H.busy) return false;
       navigator.vibrate?.(30);
       try {
         const r = await api(`/api/student/sessions/${sid}/lost`, { method: "POST" });
         const same = H.ev?.id === r.event.id;
-        if (!same) { H.ev = r.event; H.phrases = r.phrases; H.now = r.now || null; H.cards = []; H.picked = null; H.catchups = 0; H.retries = 0; H.tries = {}; H.seq++; }
-        st.ai = r.ai;
+        if (!same) Object.assign(H, { ev: r.event, phrases: r.phrases, now: r.now || null, cards: [], picked: null, catchups: 0, tries: {}, seq: H.seq + 1, title: "" });
+        H.gaps = r.gaps; st.ai = r.ai;
         $("#ack").textContent = `Marked at ${fmt(r.event.t)}${r.others ? ` · ${r.others} other${r.others === 1 ? "" : "s"} too` : ""}`;
-        if (!same) showPicker(r.gaps);
-        else $("#help").scrollIntoView({ behavior: "smooth", block: "start" });
-      } catch (e) { toast(e.message, "error"); }
-    };
+        return true;
+      } catch (e) { toast(e.message, "error"); return false; }
+    }
+    $("#lost").onclick = async () => { if (await tap()) showPicker(); };
 
     // Step 1: what lost you? One tap is enough; everything else is optional.
-    function showPicker(gaps) {
-      const box = $("#help"); box.hidden = false;
-      box.innerHTML = `
-        <div class="help-head"><h2 id="helpH">Which line lost you?</h2><button class="quiet" id="closeHelp">Skip</button></div>
-        ${gaps?.length ? `<p class="note warn">Some audio is missing from the last minute.</p>` : ""}
+    function showPicker() {
+      H.title = "Which line lost you?";
+      $("#helpH").textContent = H.title;
+      $("#help").innerHTML = `
+        ${H.gaps?.length ? `<p class="note warn">Some audio is missing from the last minute.</p>` : ""}
         <div class="phrase-list" role="group" aria-label="Recent lines from the lecture">
           ${H.phrases.map((p) => `<button class="phrase" data-line="${p.idx}"><time>${fmt(p.t)}</time>${esc(p.text)}</button>`).join("")}
           ${H.now ? `<button class="phrase phrase-now" data-now><span class="now-label">Right now</span>${esc(H.now)}…</button>` : ""}
           ${!H.phrases.length && !H.now ? `<p class="note">Nothing has been transcribed yet.</p>` : ""}
         </div>
         <div class="row">
-          <button class="primary" id="explainCurrent">${H.phrases.length ? "Just explain what's happening" : "Get help"}</button>
+          <button class="primary" id="explainCurrent">${H.phrases.length ? "Explain the current topic" : "Get help"}</button>
           <button id="explainEarlier">It started earlier</button>
         </div>
         <details class="optional"><summary>Ask your own question</summary>
-          <fieldset class="chips-field"><legend>What kind of confusion?</legend>
-            ${[["term", "A term"], ["reasoning", "A reasoning step"], ["connection", "How it connects"], ["missed", "I missed what was said"]].map(([k, l]) => `<label class="chip"><input type="radio" name="cat" value="${k}"> ${l}</label>`).join("")}
-          </fieldset>
-          <label for="q">Your question</label><input id="q" maxlength="300" placeholder="What does … mean?">
+          <label for="q" class="visually-hidden">Your question</label><input id="q" maxlength="300" placeholder="What does … mean?">
         </details>`;
-      $("#closeHelp").onclick = () => { box.hidden = true; $("#lost").focus(); };
-      box.querySelectorAll(".phrase[data-line]").forEach((b) => b.addEventListener("click", () => explain("phrase", Number(b.dataset.line))));
-      box.querySelector(".phrase[data-now]")?.addEventListener("click", () => explain("current", null, { text: H.now }));
+      setHelp("open"); $("#helpH").focus();
+      $("#help").querySelectorAll(".phrase[data-line]").forEach((b) => b.addEventListener("click", () => explain("phrase", Number(b.dataset.line))));
+      $("#help").querySelector(".phrase[data-now]")?.addEventListener("click", () => explain("current", null, { text: H.now }));
       $("#explainCurrent").onclick = () => explain($("#q").value.trim() ? "question" : "current");
       $("#explainEarlier").onclick = () => explain("earlier");
-      box.scrollIntoView({ behavior: "smooth", block: "start" });
-      $("#helpH").focus?.();
     }
 
     async function explain(anchor, line = null, picked = null) {
       const seq = H.seq;
-      const body = { kind: "explain", anchor, line, category: $("input[name=cat]:checked")?.value || null, question: $("#q")?.value.trim() || null };
-      H.picked = picked || (line != null ? H.phrases.find((p) => p.idx === line) : null);
-      $("#help").innerHTML = `<div class="help-head"><h2 id="helpH">Getting help…</h2></div>${H.picked ? `<p class="note">"${esc(H.picked.text)}"</p>` : ""}<p class="note help-wait">Thinking…</p>`;
+      const body = { kind: "explain", anchor, line, question: $("#q")?.value.trim() || null };
+      H.picked = picked || (line != null ? H.phrases.find((p) => p.idx === line) || st.lines[line] : null);
+      box.querySelectorAll(".tline.picked").forEach((p) => p.classList.remove("picked"));
+      if (line != null) box.querySelector(`.tline[data-idx="${line}"]`)?.classList.add("picked");
+      H.title = "Getting help…"; $("#helpH").textContent = H.title;
+      $("#help").innerHTML = `${H.picked ? `<p class="picked-quote">"${esc(H.picked.text)}"</p>` : ""}<div class="skeleton" aria-hidden="true"><span></span><span></span><span></span></div><p class="note help-wait">Reading the lecture and notes…</p>`;
+      setHelp("open");
       const r = await request(body);
       if (seq !== H.seq) return; // a newer tap replaced this one
-      if (r) { H.cards = [r]; paintHelp(); }
+      if (r) { H.cards = [r]; paintHelp(); } else { $("#help").innerHTML = `<p class="form-error">No help came back.</p><button data-h="again">Try again</button>`; }
     }
     async function request(body) {
       H.busy = true;
@@ -190,39 +267,38 @@
 
     // The card stays put while class continues; polling never redraws it.
     function paintHelp() {
-      const box = $("#help"), first = H.cards[0]?.payload;
-      const title = first?.v === 2 ? first.title : first?.topic;
-      box.innerHTML = `<div class="help-head"><h2 id="helpH">${esc(title || "Here's help")}</h2><button class="quiet" id="closeHelp">Close</button></div>
-        
-        ${H.cards.map((c, i) => cardHtml(c, i)).join("")}
-        <div id="afterCards"></div>
+      const first = H.cards[0]?.payload;
+      H.title = (first?.v === 2 ? first.title : first?.topic) || "Here's help";
+      $("#helpH").textContent = H.title;
+      $("#help").innerHTML = `${H.cards.map((c, i) => cardHtml(c, i)).join("")}
         <div class="help-actions" id="helpActions">
           <button class="primary" data-h="helped">Got it</button>
-          <button data-h="still">Still lost</button>
-          ${st.ai ? `<button data-h="retry">Another way</button>` : ""}
+          <button data-h="still">Still confused</button>
+          ${st.ai ? `<button data-h="retry">Explain differently</button>` : ""}
           <button data-h="catchup">Catch me up</button>
-          ${st.ai ? `<details class="more-actions"><summary>Other help</summary><button data-h="steps">Show the steps</button><button data-h="check">Quiz me</button></details>` : ""}
         </div>
-        <p class="note" id="sinceTap"></p>
-        <div id="catchupBox" aria-live="polite"></div>`;
-      $("#closeHelp").onclick = () => { box.hidden = true; $("#lost").focus(); };
+        <div id="catchupBox" aria-live="polite"></div>
+        <p class="note since" id="sinceTap"></p>
+        <button class="quiet back-live" data-h="backlive">Back to live</button>`;
       paintSince();
     }
-    const KICKER = { retry: "Another way to see it", steps: "Step by step", simpler: "A simpler start", prereq: "The idea underneath" };
+    const KICKER = { retry: "Another way to see it", simpler: "A simpler start", prereq: "The idea underneath" };
     function cardHtml(c, i) {
       const p = c.payload;
       const label = KICKER[c.kind] || "";
       if (!p) return `<p class="form-error">${esc(c.error || "No help came back.")}</p>`;
       if (p.ai === false) {
-        return `<div class="card-block">${label ? `<h3>${label}</h3>` : ""}
-          <p class="note">${esc(c.error || "The AI helper is off on this server.")} Here is what was said and what the course materials say.</p>
-          ${p.excerpt?.length ? `<div class="excerpt"><span class="label">What your professor said</span>${p.excerpt.map((l) => `<p class="${l.mine ? "mine" : ""}"><time>${fmt(l.t)}</time>${esc(l.text)}</p>`).join("")}</div>` : `<p class="note">Nothing was transcribed around your tap.</p>`}
+        return `<div class="card-block">${label ? `<p class="lesson-kicker">${label}</p>` : ""}
+          <p class="note">${esc(c.error || "The AI helper is off on this server.")} Here is what the course notes say, and what was transcribed.</p>
           ${p.passages?.length ? `<div class="excerpt"><span class="label">From course materials</span>${p.passages.map((x) => `<p><b>${safeUrl(x.url) ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.title)}</a>` : esc(x.title)}</b>${x.location ? `, ${esc(x.location)}` : ""}<br>${esc(x.text)}</p>`).join("")}</div>` : `<p class="note">No matching course material.</p>`}
+          ${p.excerpt?.length ? `<details class="excerpt-d"><summary>What was transcribed (may contain errors)</summary><div class="excerpt">${p.excerpt.map((l) => `<p class="${l.mine ? "mine" : ""}"><time>${fmt(l.t)}</time>${esc(l.text)}</p>`).join("")}</div></details>` : ""}
           ${p.gaps?.length ? `<p class="note warn">Some audio near your tap is missing from the transcript.</p>` : ""}</div>`;
       }
-      return `<div class="card-block" data-i="${i}">${Lost.lesson(p, { kicker: label, showTitle: i > 0, headingLevel: 3 })}${p.diagnostic ? diagHtml(p.diagnostic) : ""}</div>`;
+      return `<div class="card-block" data-i="${i}">${Lost.lesson(p, { kicker: label, showTitle: i > 0, headingLevel: 3 })}
+        ${p.visualIssue ? `<p class="note vis-fail">The picture for this one didn't pass Lost's checks, so it's left out. <button class="linkish" data-h="retry">Try another explanation</button></p>` : ""}
+        ${p.diagnostic ? `<details class="diag-d"><summary>Quick check: is it the idea underneath?</summary>${diagHtml(p.diagnostic)}</details>` : ""}</div>`;
     }
-    const diagHtml = (d) => `<form class="check" data-check="${d.id}" data-kind="diagnostic"><fieldset><legend><b>Quick check:</b> ${esc(d.question)}</legend>
+    const diagHtml = (d) => `<form class="check" data-check="${d.id}" data-kind="diagnostic"><fieldset><legend>${esc(d.question)}</legend>
       ${d.choices.map((ch, k) => `<label class="choice"><input type="radio" name="d-${d.id}" value="${k}"> ${esc(ch)}</label>`).join("")}</fieldset>
       <div class="row"><button class="primary">Answer</button><button type="button" class="quiet" data-skip>Skip</button></div><p class="check-result" aria-live="polite"></p></form>`;
 
@@ -245,39 +321,50 @@
       f.querySelectorAll("label.choice").forEach((l, k) => { if (k === r.correctIndex) l.classList.add("right"); else if (l.contains(chosen)) l.classList.add("wrong"); });
       f.querySelector(".check-result").innerHTML = r.correct ? `<b>Right.</b> ${esc(r.why || "")}` : `<b>Not quite.</b> ${esc(r.why || "")}`;
       if (f.dataset.kind === "diagnostic" && !r.correct) {
-        f.insertAdjacentHTML("beforeend", `<p class="note help-wait">That's useful to know: explaining ${esc(r.prerequisite || "the idea underneath")} first…</p>`);
+        f.insertAdjacentHTML("beforeend", `<p class="note help-wait">Explaining ${esc(r.prerequisite || "the idea underneath")} first…</p>`);
         const c = await request({ kind: "prereq", attempt: 1 });
         if (c) { H.cards.push(c); paintHelp(); }
       }
     });
 
+    // "Got it": the student says they understand. Save it, close the panel, give the transcript its room
+    // back, and offer Undo for a few seconds. The moment and its help stay in My moments and the review.
+    async function gotIt() {
+      const ev = H.ev, cards = H.cards, title = H.title, picked = H.picked;
+      let r;
+      try { r = await api(`/api/student/events/${ev.id}/status`, { method: "POST", body: { status: "resolved" } }); }
+      catch (e) { toast(e.message, "error"); return; }
+      setHelp("closed");
+      box.querySelectorAll(".tline.picked").forEach((p) => p.classList.remove("picked"));
+      $("#lost").focus({ preventScroll: true });
+      snack(`Saved to My moments as understood.`, "Undo", async () => {
+        await api(`/api/student/events/${ev.id}/status`, { method: "POST", body: { status: r.previous || "open" } });
+        Object.assign(H, { ev, cards, title, picked }); paintHelp(); setHelp("open"); $("#helpH").focus();
+      });
+    }
+    let snackT = null;
+    function snack(msg, label, fn) {
+      const s = $("#snack");
+      s.innerHTML = `<span>${esc(msg)}</span>${label ? `<button class="linkish" id="snackBtn">${esc(label)}</button>` : ""}`;
+      s.hidden = false; clearTimeout(snackT);
+      $("#snackBtn")?.addEventListener("click", () => { s.hidden = true; fn(); }, { once: true });
+      snackT = setTimeout(() => (s.hidden = true), 8000);
+    }
+
     async function action(kind, btn) {
-      if (kind === "helped") {
-        await api(`/api/student/events/${H.ev.id}/status`, { method: "POST", body: { status: "resolved" } });
-        $("#helpActions").innerHTML = `<p class="note">Nice. Tap I'm lost any time.</p><button data-h="catchup" class="primary">Catch me up</button>`;
-        toast("Marked resolved.");
-      }
-      if (kind === "retry" || kind === "steps" || kind === "still") {
+      if (kind === "helped") return gotIt();
+      if (kind === "backlive") { setHelp("min"); jumpLive(); return; }
+      if (kind === "again") return explain("current");
+      if (kind === "retry" || kind === "still") {
         const ask = kind === "still" ? "simpler" : kind;
         if (kind === "still") await api(`/api/student/events/${H.ev.id}/status`, { method: "POST", body: { status: "still" } });
-        H.tries ||= {};
-        if ((H.tries[ask] || 0) >= 3) { toast("That's three tries of this kind. This moment stays open, and it'll be in your review after class."); return; }
+        if ((H.tries[ask] || 0) >= 3) { toast("That's three tries. This moment stays open, and it'll be in your review after class."); return; }
         const label = btn.textContent;
-        btn.disabled = true; btn.textContent = kind === "steps" ? "Breaking it into steps…" : kind === "retry" ? "Finding another way…" : "Starting simpler…";
+        btn.disabled = true; btn.textContent = kind === "retry" ? "Finding another way…" : "Starting simpler…";
         H.tries[ask] = (H.tries[ask] || 0) + 1;
         const c = await request({ kind: ask, attempt: H.tries[ask] });
-        if (c) { H.cards.push(c); paintHelp(); $$(".card-block").at(-1)?.scrollIntoView({ behavior: "smooth", block: "start" }); }
+        if (c) { H.cards.push(c); paintHelp(); $$("#help .card-block").at(-1)?.scrollIntoView({ block: "start" }); }
         else { btn.disabled = false; btn.textContent = label; H.tries[ask]--; }
-      }
-      if (kind === "check") {
-        btn.disabled = true; btn.textContent = "Writing a question…";
-        try {
-          const q = await api(`/api/student/events/${H.ev.id}/check`, { method: "POST" });
-          $("#afterCards").innerHTML = `<form class="check" data-check="${q.id}" data-kind="comprehension"><fieldset><legend><b>Check your understanding</b> (new example, made by the AI): ${esc(q.question)}</legend>
-            ${q.choices.map((ch, k) => `<label class="choice"><input type="radio" name="c-${q.id}" value="${k}"> ${esc(ch)}</label>`).join("")}</fieldset>
-            <div class="row"><button class="primary">Answer</button><button type="button" class="quiet" data-skip>Skip</button></div><p class="check-result" aria-live="polite"></p></form>`;
-        } catch (e) { toast(e.message, "error"); }
-        btn.disabled = false; btn.textContent = "Quiz me";
       }
       if (kind === "catchup") {
         btn.disabled = true; btn.textContent = "Catching up…";
@@ -285,52 +372,76 @@
         btn.disabled = false; btn.textContent = "Catch me up";
         if (!c) { H.catchups--; return; }
         const p = c.payload || {};
-        $("#catchupBox").innerHTML = `<div class="catchup"><h3>While you were reading (${fmt(p.since)} to ${fmt(p.until)})</h3>
+        $("#catchupBox").innerHTML = `<div class="catchup"><h3>Since you tapped (${fmt(p.since)} to ${fmt(p.until)})</h3>
           ${p.gaps?.length ? `<p class="note warn">No audio reached Lost for ${p.gaps.map((g) => `${fmt(g.from_t)}-${g.to_t == null ? "now" : fmt(g.to_t)}`).join(", ")}, so that part is missing.</p>` : ""}
-          ${p.empty ? `<p>Nothing new has been transcribed since your tap.</p>`
-            : p.ai ? `<p>${esc(p.happened)}</p><p><b>Now:</b> ${esc(p.current_topic)}</p><p><b>How it connects:</b> ${esc(p.connection)}</p>${Lost.sources(p.sources, "From the transcript")}`
-            : `<p class="note">${esc(c.error || "AI is off.")} The latest lines:</p><div class="excerpt">${(p.lines || []).map((l) => `<p><time>${fmt(l.t)}</time>${esc(l.text)}</p>`).join("")}</div>`}</div>`;
-        $("#catchupBox").scrollIntoView({ behavior: "smooth", block: "nearest" });
+          ${p.empty ? `<p>Nothing new has been said since your tap.</p>`
+            : p.ai ? `<p>${esc(p.happened)}</p><p><b>Now:</b> ${esc(p.current_topic)}</p><p class="note">${esc(p.connection)}</p>`
+            : `<p class="note">${p.thin ? "Only a little has been said since your tap, so here it is word for word:" : `${esc(c.error || "AI is off.")} The latest lines:`}</p><div class="excerpt">${(p.lines || []).map((l) => `<p><time>${fmt(l.t)}</time>${esc(l.text)}</p>`).join("")}</div>`}</div>`;
       }
     }
     function paintSince() {
       const el = $("#sinceTap"); if (!el || !H.ev) return;
       const n = st.lastIdx == null ? 0 : st.lastIdx - (H.ev.line_idx ?? -1);
-      el.textContent = st.status === "live" ? `Class is at ${fmt(st.clock)}${n > 0 ? ` · ${n} new line${n === 1 ? "" : "s"} since your tap` : ""}` : st.status === "ended" ? "Class has ended. Your summary will cover this moment." : "";
+      el.textContent = st.status === "live" ? `Class is at ${fmt(st.clock)}${n > 0 ? ` · ${n} new line${n === 1 ? "" : "s"} since your tap` : ""}` : st.status === "ended" ? "Class has ended. This moment is in your review." : "";
     }
 
-    // ---------- transcript (only fetched while open) ----------
-    $("#showT").onclick = () => {
-      st.transcriptOpen = !st.transcriptOpen;
-      $("#tpanel").hidden = !st.transcriptOpen;
-      $("#showT").textContent = st.transcriptOpen ? "Hide transcript" : "Show transcript";
-      $("#showT").setAttribute("aria-expanded", st.transcriptOpen);
-      $("#showT").classList.toggle("on", st.transcriptOpen);
-      st.rev = -1;
+    // ---------- My moments (this class) ----------
+    $("#momentsBtn").onclick = async () => {
+      const v = await Lost.dialog({ opener: $("#momentsBtn"), title: "My moments in this class",
+        body: st.mine.length ? `<p class="note">Only you see these. Open one to read its help again.</p><ul class="moments">${st.mine.map((m) => `<li><button value="${esc(m.id)}" class="moment-btn" form="dlgForm"><time>${fmt(m.t)}</time><span>${esc(m.topic || "Your moment")}</span><span class="badge ${m.self_status === "resolved" ? "good" : ""}">${m.self_status === "resolved" ? "Understood" : m.self_status === "still" ? "Still confused" : "Open"}</span></button></li>`).join("")}</ul>`
+          : `<p>No moments yet. Tap I'm lost, or a line in the transcript, when something loses you.</p>`,
+        buttons: [{ value: "", label: "Close", kind: "primary", focus: !st.mine.length }] });
+      if (v) openMoment(v);
     };
-    function paintLines() {
-      const box = $("#tlines");
-      const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 50;
-      const lines = st.lines.filter(Boolean).slice(-150).map((l) => `<p><time>${fmt(l.t)}</time>${esc(l.text)}</p>`).join("");
-      box.innerHTML = (lines + (st.now ? `<p class="saying"><time>now</time>${esc(st.now)}</p>` : "")) || `<p class="note">Nothing yet. Words show up as your professor talks.</p>`;
-      if (atBottom) box.scrollTop = box.scrollHeight;
+    async function openMoment(id) {
+      try {
+        const d = await api(`/api/student/events/${id}`);
+        Object.assign(H, { ev: d.event, cards: d.cards, picked: d.line, phrases: d.line ? [d.line] : [], tries: {}, catchups: 0, seq: H.seq + 1 });
+        if (d.cards.length) paintHelp(); else { H.title = d.event.topic || "Your moment"; $("#helpH").textContent = H.title; $("#help").innerHTML = `${d.line ? `<p class="picked-quote">"${esc(d.line.text)}"</p>` : ""}<p class="note">You marked this moment but didn't ask for help yet.</p><button class="primary" data-h="again">Explain it</button>`; }
+        setHelp("open"); $("#helpH").focus();
+      } catch (e) { toast(e.message, "error"); }
     }
+
+    // ---------- keyboard ----------
+    const onKey = (e) => {
+      const act = LostKeys.shortcutFor(e, { dialogOpen: !!document.querySelector("dialog[open]"), map: { l: "lost", j: "jump", escape: "min", "?": "keys" } });
+      if (!act) return;
+      if (act === "lost" && !$("#lost").disabled) { e.preventDefault(); $("#lost").click(); }
+      if (act === "jump") { e.preventDefault(); jumpLive(); }
+      if (act === "min" && H.state === "open") { e.preventDefault(); setHelp("min"); $("#helpPill").focus(); }
+      if (act === "keys") { e.preventDefault(); keysDialog(); }
+    };
+    const keysDialog = () => Lost.dialog({ opener: $("#skeys"), title: "Keyboard shortcuts",
+      body: `<dl class="keys-list"><div><dt><kbd>L</kbd></dt><dd>I'm lost</dd></div><div><dt><kbd>J</kbd></dt><dd>Jump to the newest line</dd></div><div><dt><kbd>Esc</kbd></dt><dd>Minimize help</dd></div><div><dt><kbd>?</kbd></dt><dd>This list</dd></div></dl><p class="note">They pause while you type. Every one has a button too.</p>`,
+      buttons: [{ value: "", label: "Close", kind: "primary", focus: true }] });
+    $("#skeys").onclick = keysDialog;
+    document.addEventListener("keydown", onKey);
+    Lost.onLeave(() => document.removeEventListener("keydown", onKey));
 
     // ---------- poll ----------
     Lost.poll(async (signal) => {
-      const d = await api(`/api/student/sessions/${sid}/live?lines=${st.transcriptOpen ? 1 : 0}&since=${st.since}&rev=${st.rev}`, { signal });
+      const d = await api(`/api/student/sessions/${sid}/live?lines=1&since=${st.since}&rev=${st.rev}`, { signal });
       if (d.status !== st.status) {
         st.status = d.status;
         $("#roomTitle").textContent = `${d.course.code} ${d.title || d.course.name}`;
         $("#dot").className = `dot ${d.status}`;
-        $("#statusText").textContent = { ready: "Waiting for class to start", live: "Class is live", ending: "Class is ending", ended: "Class is over" }[d.status];
+        $("#statusText").textContent = { ready: "Waiting to start", live: "Live", ending: "Ending", ended: "Class is over" }[d.status];
         $("#lost").disabled = d.status !== "live";
         if (d.status === "ended") $("#ack").innerHTML = `Class is over. <a href="#/session/${sid}">Your summary and review</a> will be ready here soon.`;
-        else if (d.status === "live" && !$("#ack").textContent) $("#ack").textContent = "Nobody sees who tapped.";
       }
-      st.clock = d.clock; st.lastIdx = d.lastIdx; st.ai = d.ai;
+      st.clock = d.clock; st.lastIdx = d.lastIdx; st.ai = d.ai; st.mine = d.mine || [];
+      $("#clock").textContent = d.status === "live" ? fmt(d.clock) : "";
+      $("#momentsN").textContent = st.mine.length; $("#momentsN").hidden = !st.mine.length;
       Lost.backdrop(d.theme);
-      if (d.lines) { if (d.full) st.lines = []; for (const l of d.lines) st.lines[l.idx] = l; st.since = st.lines.length; st.rev = d.rev; const nowChanged = (d.now || "") !== st.now; st.now = d.now || ""; if (d.lines.length || d.full || nowChanged) paintLines(); }
+      if (d.lines) {
+        const full = d.full && st.rev !== -1 && d.rev !== st.rev; // the professor fixed a line: redraw, keep position
+        const keep = box.scrollTop;
+        if (d.full) st.lines = [];
+        for (const l of d.lines) st.lines[l.idx] = l;
+        st.since = st.lines.length; st.rev = d.rev;
+        const nowChanged = (d.now || "") !== st.now; st.now = d.now || "";
+        if (d.lines.length || full || nowChanged || !st.rendered) { paintLines(full || !st.rendered); if (full) box.scrollTop = keep; }
+      }
       paintSince();
       handleAudio(d);
     });
@@ -344,8 +455,10 @@
       const ok = st.status === "live" && !!lastAudio;
       $("#listen").disabled = !ok;
       $("#listen").classList.toggle("on", wantSound && ok);
-      $("#listen").textContent = wantSound && ok ? "Stop listening" : "Listen to class";
-      $("#listenNote").textContent = st.status !== "live" ? "" : !lastAudio ? "Your professor's mic isn't shared right now." : wantSound ? "Listening, about 2 seconds behind the room." : "";
+      $("#listen").setAttribute("aria-pressed", String(wantSound && ok));
+      $("#listen").textContent = wantSound && ok ? "Listening" : "Listen";
+      $("#listen").title = st.status !== "live" ? "" : !lastAudio ? "Your professor's microphone is off" : "Hear the class, about 2 seconds behind";
+      $("#listenNote").textContent = $("#listen").title;
     }
     function handleAudio(d) {
       lastAudio = d.audio;
@@ -400,10 +513,12 @@
         <p class="crumb"><a href="#/course/${s.course_id}">${esc(s.code)} ${esc(s.course)}</a></p>
         <h1>Class on ${when(s.started_at)}</h1>
         ${s.title ? `<p class="note">${esc(s.title)}</p>` : ""}
-        ${unresolved.length ? `<button class="gold" data-scroll="review">Five-minute review (${unresolved.length} open)</button>` : ""}
+        ${d.events.length ? `<button class="gold" data-scroll="review">Your learning moments (${d.events.length}${unresolved.length ? `, ${unresolved.length} still open` : ""})</button>` : ""}
         <section class="panel" aria-live="polite"><h2>Class summary</h2>${summaryBlock(d)}</section>
-        <section class="panel" id="review"><h2>Your moments</h2><p class="note">Only you see this part.</p>
-          ${d.events.length ? d.events.map((e) => eventBlock(e, d)).join("") : `<p class="empty-state">You didn't tap I'm lost in this class.</p>`}</section>
+        <section class="panel" id="review"><h2>Your learning moments</h2><p class="note">Private: only you see this. Every spot you marked is here, including the ones you later understood.</p>
+          ${d.events.length ? `<ol class="moment-strip">${d.events.map((e) => `<li class="${e.status === "resolved" ? "ok" : "open"}"><a href="#ev-${e.id}" data-jump="ev-${e.id}"><time>${fmt(e.t)}</time> ${esc(e.topic || "Your moment")}</a><span class="badge ${e.status === "resolved" ? "good" : "warn"}">${e.status === "resolved" ? "You said you got it" : "Still open"}</span></li>`).join("")}</ol>
+            <div class="quiz-box" id="quizBox"><h3>Optional quiz</h3><p class="note">Up to 3 questions on the spots you marked, each with a new example. Not a grade, and it doesn't change what you marked as understood.</p><button class="primary" id="startQuiz">Start the quiz</button></div>
+            ${d.events.map((e) => eventBlock(e, d)).join("")}` : `<p class="empty-state">You didn't tap I'm lost in this class.</p>`}</section>
         ${d.support.officeHours || d.support.tutoring ? `<section class="panel"><h2>More help</h2><p class="note">Links added by your professor.</p><ul class="plain">${safeUrl(d.support.officeHours) ? `<li><a href="${esc(d.support.officeHours)}" target="_blank" rel="noopener">Office hours</a></li>` : ""}${safeUrl(d.support.tutoring) ? `<li><a href="${esc(d.support.tutoring)}" target="_blank" rel="noopener">Tutoring</a></li>` : ""}</ul></section>` : ""}`;
       const target = location.hash.match(/#ev-([\w-]+)$/)?.[1];
       if (target) document.getElementById(`ev-${target}`)?.scrollIntoView();
@@ -414,12 +529,27 @@
     const onClick = async (e) => {
       const sc = e.target.closest("button[data-scroll]");
       if (sc) { const t = document.getElementById(sc.dataset.scroll); t.scrollIntoView({ behavior: "smooth" }); t.querySelector("input,button")?.focus({ preventScroll: true }); return; }
+      const j = e.target.closest("a[data-jump]");
+      if (j) { e.preventDefault(); document.getElementById(j.dataset.jump)?.scrollIntoView({ block: "start" }); return; }
+      if (e.target.id === "startQuiz") return startQuiz(e.target);
       const b = e.target.closest("button[data-ev]"); if (!b) return;
       const id = b.dataset.ev;
       if (b.dataset.do === "resolved" || b.dataset.do === "still") { await api(`/api/student/events/${id}/status`, { method: "POST", body: { status: b.dataset.do } }); toast(b.dataset.do === "resolved" ? "Marked resolved." : "Kept open."); draw(); }
       if (b.dataset.do === "oh") { const ta = $(`#oh-${id}`); await api(`/api/student/events/${id}/office-hours`, { method: "POST", body: { text: ta.value } }); toast("Saved. Lost doesn't send it anywhere."); }
       if (b.dataset.do === "copy") { const ta = $(`#oh-${id}`); try { await navigator.clipboard.writeText(ta.value); toast("Copied."); } catch { ta.select(); toast("Select and copy the text."); } }
     };
+    // The quiz: unresolved moments first, then the ones the student said they understood.
+    async function startQuiz(btn) {
+      const d = await api(`/api/student/sessions/${sid}`);
+      const pick = [...d.events.filter((e) => e.status !== "resolved"), ...d.events.filter((e) => e.status === "resolved")].slice(0, 3);
+      btn.disabled = true; btn.textContent = "Writing questions…";
+      const qs = [];
+      for (const ev of pick) { try { qs.push({ ev, q: await api(`/api/student/events/${ev.id}/check`, { method: "POST" }) }); } catch (x) { qs.push({ ev, err: x.message }); } }
+      $("#quizBox").innerHTML = `<h3>Optional quiz</h3><p class="note">Not a grade. New examples, written by the AI.</p>${qs.map(({ ev, q, err }, i) => err ? `<p class="note">Question ${i + 1} (${esc(ev.topic || fmt(ev.t))}): ${esc(err)}</p>`
+        : `<form class="check" data-check="${q.id}" data-quiz="1"><fieldset><legend><span class="lesson-label">${i + 1} · ${esc(ev.topic || `the spot at ${fmt(ev.t)}`)}</span><br>${esc(q.question)}</legend>
+          ${q.choices.map((ch, k) => `<label class="choice"><input type="radio" name="q-${q.id}" value="${k}"> ${esc(ch)}</label>`).join("")}</fieldset>
+          <button class="primary">Answer</button><p class="check-result" aria-live="polite"></p></form>`).join("")}`;
+    }
     const onSubmit = async (e) => {
       const f = e.target.closest("form.check"); if (!f) return;
       e.preventDefault();
@@ -428,7 +558,7 @@
       if (r.error) { f.querySelector(".check-result").textContent = r.error; return; }
       f.querySelectorAll("input,button").forEach((x) => (x.disabled = true));
       f.querySelectorAll("label.choice").forEach((l, k) => { if (k === r.correctIndex) l.classList.add("right"); else if (l.contains(chosen)) l.classList.add("wrong"); });
-      f.querySelector(".check-result").innerHTML = `${r.correct ? "<b>Right.</b>" : "<b>Not quite.</b>"} ${esc(r.why || "")}${r.correct ? " If it makes sense now, mark the moment resolved." : ""}`;
+      f.querySelector(".check-result").innerHTML = `${r.correct ? "<b>Right.</b>" : "<b>Not quite.</b>"} ${esc(r.why || "")}`;
     };
     app.addEventListener("click", onClick); app.addEventListener("submit", onSubmit);
     Lost.onLeave(() => { app.removeEventListener("click", onClick); app.removeEventListener("submit", onSubmit); });
@@ -439,7 +569,7 @@
     if (!d.summary) return d.summaryState === "failed" ? `<p><span class="badge bad">Not available</span> The summary couldn't be written. Your professor can retry it. Your own moments are below.</p>` : `<p><span class="badge">Being written</span> This page updates by itself, and you'll get a notification.</p>`;
     if (d.summary.status === "transcript_only") return `${d.summary.empty ? `<p class="note">Nothing was transcribed in this class.</p>` : `<p class="note">No AI summary for this class (the AI was off). Here is the transcript.</p><details><summary>Transcript</summary><div class="excerpt">${(d.transcript || []).map((l) => `<p><time>${fmt(l.t)}</time>${esc(l.text)}</p>`).join("")}</div></details>`}`;
     const s = d.summary.shared;
-    return `<p class="note">Written by AI from today's lecture and notes. Sources are under More in each topic.</p>${Lost.sharedSummary(s)}
+    return `<p class="note">Written by AI from today's lecture and notes. Each topic has its sources under Sources.</p>${Lost.sharedSummary(s)}
       ${d.summary.materials?.length ? `<h3>Course materials used</h3><ul>${[...new Map(d.summary.materials.map((m) => [m.title + "|" + (m.location === m.title ? "" : m.location), { ...m, location: m.location === m.title ? "" : m.location }])).values()].map((m) => `<li>${safeUrl(m.url) ? `<a href="${esc(m.url)}" target="_blank" rel="noopener">${esc(m.title)}</a>` : esc(m.title)}${m.location ? `, ${esc(m.location)}` : ""}</li>`).join("")}</ul>` : ""}
       ${d.summary.gaps?.length ? `<p class="note warn">Parts of class weren't recorded: ${d.summary.gaps.map((g) => `${fmt(g.from_t)}-${g.to_t == null ? "end" : fmt(g.to_t)}`).join(", ")}.</p>` : ""}`;
   }
@@ -451,15 +581,15 @@
     const source = cardSources.find((x) => x.type === "passage");
     const draft = e.officeHours || `I got lost at ${fmt(e.t)} in the ${when(d.session.started_at)} class${e.topic ? `, on ${e.topic}` : ""}.${e.line ? ` You said: "${e.line.text}"` : ""}${source ? ` The related material is ${source.title}${source.location ? `, ${source.location}` : ""}.` : ""}${tried ? ` I ${tried}.` : ""}${e.question ? ` My question: ${e.question}` : " What I still don't get is: "}`;
     return `<article class="ev" id="ev-${e.id}">
-      <h3><span class="at">${fmt(e.t)}</span>${esc(e.topic || "The part you marked")} <span class="badge ${e.status === "resolved" ? "good" : ""}">${e.status === "resolved" ? "Resolved" : "Open"}</span></h3>
+      <h3><span class="at">${fmt(e.t)}</span>${esc(e.topic || "The part you marked")} <span class="badge ${e.status === "resolved" ? "good" : "warn"}">${e.status === "resolved" ? "You said you got it" : "Still open"}</span></h3>
       ${e.line ? `<p class="lost-at"><span>You got lost at</span>"${esc(e.line.text)}"</p>` : ""}
       ${e.question ? `<p class="note">Your question: ${esc(e.question)}</p>` : ""}
       ${card ? `<details><summary>The explanation you got</summary>${Lost.lesson(card, { headingLevel: 4 })}</details>` : ""}
-      ${e.checks.filter((c) => c.chosen != null).map((c) => `<p class="note">${c.kind === "diagnostic" ? "Quick check" : c.kind === "review" ? "Review" : "Understanding check"}: ${c.correct ? "answered right" : "answered wrong"}.</p>`).join("")}
+      ${e.checks.filter((c) => c.chosen != null).map((c) => `<p class="note">${c.kind === "diagnostic" ? "Quick check" : c.kind === "review" ? "Review question" : "Quiz"}: ${c.correct ? "answered right" : "answered wrong"} (separate from what you marked).</p>`).join("")}
       ${e.review && e.review.chosen == null ? `<form class="check" data-check="${e.review.id}"><fieldset><legend><b>Review</b> (made by the AI from today's class): ${esc(e.review.question)}</legend>
         ${e.review.choices.map((ch, k) => `<label class="choice"><input type="radio" name="r-${e.review.id}" value="${k}"> ${esc(ch)}</label>`).join("")}</fieldset>
         <button class="primary">Answer</button><p class="check-result" aria-live="polite"></p></form>` : ""}
-      <div class="row">${e.status === "resolved" ? `<button data-ev="${e.id}" data-do="still">Reopen</button>` : `<button data-ev="${e.id}" data-do="resolved">It makes sense now</button>`}</div>
+      <div class="row">${e.status === "resolved" ? `<button data-ev="${e.id}" data-do="still">Reopen</button>` : `<button data-ev="${e.id}" data-do="resolved">I get it now</button>`}</div>
       ${e.status !== "resolved" ? `<details class="oh"><summary>Prepare an office-hours question</summary>
         <label for="oh-${e.id}">Edit it before you use it. Lost doesn't send it to anyone.</label><textarea id="oh-${e.id}" rows="5">${esc(draft)}</textarea>
         <div class="row"><button data-ev="${e.id}" data-do="oh">Save</button><button data-ev="${e.id}" data-do="copy">Copy</button></div></details>` : ""}

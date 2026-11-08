@@ -306,15 +306,21 @@ test("the full help flow: explain, cleaned citations, diagnostic, retry, check, 
   assert.match(prompts.at(-1).prompt, /<previous>/);
   // the lecture continues; catch-up covers only what came after the tap
   await say(rivera, sid, "Next, the Internet checksum adds 16-bit words.");
-  const cu = (await jordan.post(`/api/student/events/${tap.event.id}/help`, { kind: "catchup", attempt: 1 })).data;
+  // one short line is too little to summarise: the student gets the line itself, no AI text
+  const thin = (await jordan.post(`/api/student/events/${tap.event.id}/help`, { kind: "catchup", attempt: 1 })).data;
+  assert.equal(thin.payload.ai, false); assert.equal(thin.payload.thin, true);
+  assert.match(thin.payload.lines[0].text, /checksum/);
+  await say(rivera, sid, "You add the words together, fold any carry back into the low bits, then flip every bit of the result.");
+  const cu = (await jordan.post(`/api/student/events/${tap.event.id}/help`, { kind: "catchup", attempt: 2 })).data;
   assert.equal(cu.payload.ai, true);
-  assert.equal(cu.payload.lineCount, 1);
-  assert.match(cu.payload.sources[0].text, /checksum/);
+  assert.equal(cu.payload.lineCount, 2);
+  assert.ok(cu.payload.since === tap.event.t, "catch-up starts at the tap");
+  assert.match(cu.payload.sources[0].text, /carry/); // the fake AI cites the newest line
   // comprehension check graded on the server
   const q = (await jordan.post(`/api/student/events/${tap.event.id}/check`)).data;
   assert.equal(q.correct_index, undefined);
   assert.equal((await jordan.post(`/api/student/checks/${q.id}/answer`, { chosen: 0 })).data.correct, true);
-  assert.equal(db.all("SELECT * FROM help_responses WHERE event_id = ?", tap.event.id).length, 4);
+  assert.equal(db.all("SELECT * FROM help_responses WHERE event_id = ?", tap.event.id).length, 5); // explain, prereq, retry, two catch-ups
   await rivera.post(`/api/prof/sessions/${sid}/end`);
   ai.setFakeProvider(null);
 });
@@ -580,4 +586,117 @@ test("visual specs are checked and computed by Lost, never trusted as given", as
   assert.deepEqual(m.visual.effect, { price: "up", quantity: "up" }, "a demand increase raises price and quantity");
   const long = v.cleanVisual({ type: "process", title: "", steps: [{ label: "x".repeat(200), detail: "" }, { label: "b", detail: "" }], alt: "" });
   assert.ok(long.visual.steps[0].label.length <= 40, "labels are clipped");
+});
+
+// ---------------- remake: shortcuts, microphone, help lifecycle, privacy ----------------
+const vm = await import("node:vm");
+const keysCtx = {}; vm.runInNewContext(fs.readFileSync(new URL("../public/keys.js", import.meta.url), "utf8"), keysCtx);
+const { shortcutFor, MicSender } = keysCtx.LostKeys;
+// A tiny stand-in for a DOM element: closest() matches by tag name or a few attribute selectors.
+const el = (tag, attrs = {}, parent = null) => ({ tagName: tag.toUpperCase(), isContentEditable: attrs.contenteditable === "true", attrs, parent,
+  closest(sel) { for (let n = this; n; n = n.parent) if (sel.split(",").some((s) => matches(n, s.trim()))) return n; return null; } });
+function matches(n, s) {
+  const tag = s.match(/^[a-z]+/)?.[0];
+  if (tag && n.tagName !== tag.toUpperCase()) return false;
+  for (const [, k, v] of s.matchAll(/\[([\w-]+)(?:="([^"]*)")?\]/g)) { if (!(k in n.attrs)) return false; if (v !== undefined && n.attrs[k] !== v) return false; }
+  if (/:not\(\[tabindex="-1"\]\)/.test(s) && n.attrs.tabindex === "-1") return false;
+  return !!tag || /\[/.test(s);
+}
+const key = (k, target, extra = {}) => ({ key: k, target, repeat: false, ctrlKey: false, metaKey: false, altKey: false, ...extra });
+const MAP = { " ": "mic", m: "mic", "?": "keys", e: "end" };
+
+test("Space and M toggle the microphone once; typing, focused controls, dialogs and held keys don't", () => {
+  const body = el("body");
+  assert.equal(shortcutFor(key(" ", body), { map: MAP }), "mic");
+  assert.equal(shortcutFor(key("M", body), { map: MAP }), "mic");
+  assert.equal(shortcutFor(key(" ", body, { repeat: true }), { map: MAP }), null, "holding Space must not toggle again");
+  assert.equal(shortcutFor(key(" ", el("input", {}, body)), { map: MAP }), null, "typing a space in a field");
+  assert.equal(shortcutFor(key("m", el("textarea", {}, body)), { map: MAP }), null);
+  assert.equal(shortcutFor(key("m", el("div", { contenteditable: "true" }, body)), { map: MAP }), null);
+  assert.equal(shortcutFor(key(" ", el("button", {}, body)), { map: MAP }), null, "a focused button already uses Space");
+  assert.equal(shortcutFor(key("m", el("button", {}, body)), { map: MAP }), "mic", "letters still work on a focused button");
+  assert.equal(shortcutFor(key(" ", body), { map: MAP, dialogOpen: true }), null, "an open dialog takes the keys");
+  assert.equal(shortcutFor(key("m", el("div", {}, el("dialog", { open: "" }, body))), { map: MAP }), null);
+  assert.equal(shortcutFor(key("m", body, { metaKey: true }), { map: MAP }), null, "Cmd/Ctrl/Alt combinations belong to the browser");
+  assert.equal(shortcutFor(key("e", body), { map: MAP }), "end", "E only opens the end-class dialog; the page never ends class from a key");
+});
+
+test("muting drops queued audio at once; ending class flushes it", async () => {
+  const sent = []; let release;
+  const gate = new Promise((r) => (release = r));
+  const s = new MicSender(async (p, first) => { await gate; sent.push([p, first]); });
+  s.start(); s.push("a"); s.push("b"); s.push("c");
+  const done = s.stop(); // mute while a, b, c are still queued
+  assert.equal(s.push("late"), false, "nothing new is accepted after mute");
+  release(); await done;
+  assert.deepEqual(sent, [], "queued pieces are dropped, not sent after the mute");
+  const s2 = new MicSender(async (p, first) => sent.push([p, first]));
+  s2.start(); s2.push("x"); s2.push("y");
+  const flushing = s2.stop({ flush: true }); s2.push("last-piece-from-recorder"); s2.closed();
+  await flushing; await s2.chain;
+  assert.deepEqual(sent, [["x", true], ["y", false], ["last-piece-from-recorder", false]]);
+});
+
+test("server: after the microphone is turned off, audio pieces are refused and reach no one", async () => {
+  const rivera = await as("prof");
+  const { sid } = await liveSession(rivera, "CSC 311", 0);
+  const send = (first) => fetch(`${base}/api/prof/sessions/${sid}/audio?first=${first ? 1 : 0}`, { method: "POST", headers: { cookie: rivera.cookie, "x-lost-csrf": rivera.csrf }, body: Buffer.from("opus") });
+  assert.equal((await send(true)).status, 200);
+  assert.equal((await send(false)).status, 200);
+  const seqBefore = live.runtime(sid).relay.seq;
+  await rivera.req("DELETE", `/api/prof/sessions/${sid}/audio`);
+  const r = await send(false);
+  assert.equal(r.status, 409, "a piece sent after mute is refused");
+  assert.equal(live.runtime(sid).relay.pieces.size, 0); assert.ok(live.runtime(sid).relay.seq <= seqBefore);
+  assert.equal((await send(true)).status, 200, "turning the mic back on starts a new stream");
+  assert.equal(db.one("SELECT status FROM lecture_sessions WHERE id = ?", sid).status, "live", "muting never ends the class");
+  await rivera.post(`/api/prof/sessions/${sid}/end`);
+});
+
+test("Got it resolves and can be undone; closing help doesn't resolve; moments stay private", async () => {
+  ai.setFakeProvider(fakeAi); aiMode = "ok";
+  const rivera = await as("prof"), jordan = await as("jordan"), riley = await as("riley");
+  const { sid } = await liveSession(rivera, "CSC 202");
+  await say(rivera, sid, "Merge sort splits the list in half, sorts each half, then merges them.");
+  const ev = (await jordan.post(`/api/student/sessions/${sid}/lost`)).data.event;
+  await jordan.post(`/api/student/events/${ev.id}/help`, { kind: "explain" });
+  // closing or minimizing the panel sends nothing; the moment stays open
+  assert.equal(db.one("SELECT self_status FROM confusion_events WHERE id = ?", ev.id).self_status, "open");
+  const got = (await jordan.post(`/api/student/events/${ev.id}/status`, { status: "resolved" })).data;
+  assert.equal(got.previous, "open");
+  const reopened = (await jordan.get(`/api/student/events/${ev.id}`)).data;
+  assert.equal(reopened.event.status, "resolved"); assert.ok(reopened.cards.length >= 1, "the explanation is kept for later");
+  await jordan.post(`/api/student/events/${ev.id}/status`, { status: got.previous }); // Undo
+  assert.equal(db.one("SELECT self_status, resolved_at FROM confusion_events WHERE id = ?", ev.id).self_status, "open");
+  // another student can't read or change it
+  assert.equal((await riley.get(`/api/student/events/${ev.id}`)).status, 404);
+  assert.equal((await riley.post(`/api/student/events/${ev.id}/status`, { status: "resolved" })).status, 404);
+  const mine = (await jordan.get(`/api/student/sessions/${sid}/live`)).data.mine;
+  assert.ok(mine.some((m) => m.id === ev.id));
+  await rivera.post(`/api/prof/sessions/${sid}/end`);
+  ai.setFakeProvider(null);
+});
+
+test("school-email sign-in: students go straight in, professors need their password", async () => {
+  const start = (body) => fetch(`${base}/api/auth/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  assert.equal((await start({ email: "new.student@usm.edu", institution: "nowhere" })).status, 400, "the university must exist");
+  const insts = (await (await fetch(`${base}/api/auth/institutions`)).json()).institutions;
+  const inst = insts[0].id;
+  const s = await start({ email: "new.student@usm.edu", institution: inst });
+  assert.equal(s.status, 200); assert.equal((await s.json()).home, "/student");
+  assert.equal(db.one("SELECT name, role FROM users WHERE email = 'new.student@usm.edu'").name, "New Student");
+  const p = await (await start({ email: "dr.rivera@demo.lost", institution: inst })).json();
+  assert.equal(p.needPassword, true, "a professor email never gets in without the password");
+  assert.equal((await start({ email: "dr.rivera@demo.lost", institution: inst, password: "wrong-password" })).status, 401);
+});
+
+test("course art: professors pick from fixed sets; anything else is ignored", async () => {
+  const rivera = await as("prof");
+  await new Promise((r) => setTimeout(r, 2500)); // let the per-address request limit refill after the tests above
+  const c = await courseByCode(rivera, "CSC 311");
+  assert.equal(c.art, "computing", "guessed from the course name");
+  await rivera.post(`/api/prof/courses/${c.id}/settings`, { art: "sports" });
+  assert.equal((await courseByCode(rivera, "CSC 311")).art, "sports");
+  await rivera.post(`/api/prof/courses/${c.id}/settings`, { art: "<script>" });
+  assert.equal((await courseByCode(rivera, "CSC 311")).art, "computing", "unknown values fall back to the guess");
 });

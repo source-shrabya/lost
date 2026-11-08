@@ -15,6 +15,7 @@
   };
   const go = (d) => { location.href = safeNext && safeNext.startsWith(d.home) ? safeNext : d.home; };
   const st = { email: "", institution: "" };
+  const expired = new URLSearchParams(location.search).get("expired") === "1";
 
   const shell = (inner) => {
     $("#app").innerHTML = `<div class="login-wrap"><section class="login-card">${inner}</section>
@@ -31,6 +32,7 @@
 
   function emailStep() {
     shell(`<h1 tabindex="-1">Sign in to Lost</h1>
+      ${expired ? `<p class="note warn" role="status">Your session ended, so you were signed out. Sign in again to pick up where you left off.</p>` : ""}
       <p class="lede">Use your school email.</p>
       <form id="f" novalidate>
         <label for="email">School email</label><input id="email" type="email" autocomplete="username" inputmode="email" placeholder="you@usm.edu" value="${esc(st.email)}" required>
@@ -49,7 +51,7 @@
   function schoolStep() {
     shell(`<p class="crumb"><button class="linkish" id="back">← ${esc(st.email)}</button></p>
       <h1 tabindex="-1">Pick your university</h1>
-      <div class="school-list">${institutions.map((i) => `<button class="school" data-inst="${esc(i.id)}"><span class="school-mark" aria-hidden="true">${esc(i.name.replace(/^The /, "").split(/\s+/).filter((w) => /^[A-Z]/.test(w)).map((w) => w[0]).join("").slice(0, 3))}</span><span>${esc(i.name)}</span></button>`).join("")}</div>
+      <div class="school-list">${institutions.map((i) => `<button class="school" data-inst="${esc(i.id)}"><svg class="school-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9l9-5 9 5M5 10v8M9.5 10v8M14.5 10v8M19 10v8M3 20h18"/></svg><span>${esc(i.name)}</span></button>`).join("")}</div>
       <p id="err" class="form-error" role="alert"></p>
       <p class="note">Your university connects Lost to Canvas, so your classes show up on their own.</p>`);
     $("#back").onclick = emailStep;

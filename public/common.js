@@ -24,7 +24,7 @@
     catch (e) { if (e.name === "AbortError") throw e; throw new ApiError(0, "No connection to Lost. Check your Wi-Fi."); }
     let data = {};
     try { data = await res.json(); } catch {}
-    if (res.status === 401 && !path.startsWith("/api/auth")) { location.href = `/login?next=${encodeURIComponent(location.pathname + location.hash)}`; throw new ApiError(401, "Signed out."); }
+    if (res.status === 401 && !path.startsWith("/api/auth")) { location.href = `/login?expired=1&next=${encodeURIComponent(location.pathname + location.hash)}`; throw new ApiError(401, "Signed out."); }
     if (!res.ok) throw new ApiError(res.status, data.error || `Request failed (${res.status}).`);
     return data;
   };
@@ -65,9 +65,11 @@
       <nav aria-label="Account" class="top-actions">
         <details class="bell" id="bell"><summary aria-label="Notifications"><span>Notifications</span> <b id="bellCount" class="count" ${me.unread ? "" : "hidden"}>${me.unread}</b></summary><div class="bell-list" id="bellList"><p class="note">Loading…</p></div></details>
         <span class="who">${esc(u.name)}</span>
-        <button class="quiet" id="logout">Sign out</button>
+        ${themeButton()}
+        <button class="quiet" id="logout" aria-haspopup="dialog">Sign out</button>
       </nav>`;
-    $("#logout").onclick = async () => { await L.api("/api/auth/logout", { method: "POST" }).catch(() => {}); location.href = "/login"; };
+    wireTheme();
+    $("#logout").onclick = () => L.confirmSignOut($("#logout"));
     $("#bell").addEventListener("toggle", async (e) => {
       if (!e.target.open) return;
       const { items } = await L.api("/api/notifications");
@@ -88,6 +90,57 @@
       c.textContent = me.unread; c.hidden = !me.unread;
     } catch {}
   }
+
+  // ---------- theme: auto / light / dark, remembered on this device ----------
+  const THEMES = ["auto", "light", "dark"];
+  const getTheme = () => { try { return localStorage.getItem("lost-theme") || "auto"; } catch { return "auto"; } };
+  const applyTheme = (t) => { if (t === "auto") document.documentElement.removeAttribute("data-theme"); else document.documentElement.dataset.theme = t; };
+  function themeButton() { const t = getTheme(); return `<button class="quiet theme-btn" id="themeBtn" aria-label="Color theme: ${t}. Change">${{ auto: "Theme: auto", light: "Theme: light", dark: "Theme: dark" }[t]}</button>`; }
+  function wireTheme() {
+    $("#themeBtn")?.addEventListener("click", () => {
+      const t = THEMES[(THEMES.indexOf(getTheme()) + 1) % 3];
+      try { localStorage.setItem("lost-theme", t); } catch {}
+      applyTheme(t); const b = $("#themeBtn"); b.textContent = `Theme: ${t}`; b.setAttribute("aria-label", `Color theme: ${t}. Change`);
+    });
+  }
+  L.applyTheme = applyTheme; applyTheme(getTheme());
+
+  // ---------- dialogs ----------
+  // A modal <dialog>: the rest of the page is inert while it's open, Escape and a click outside cancel,
+  // and focus goes back to whatever opened it. Resolves with the value of the button pressed ("" = cancelled).
+  L.dialog = ({ title, body, buttons, opener }) => new Promise((resolve) => {
+    const d = document.createElement("dialog");
+    d.className = "confirm-dlg";
+    d.setAttribute("aria-labelledby", "dlgTitle"); d.setAttribute("aria-describedby", "dlgBody");
+    d.innerHTML = `<h2 id="dlgTitle">${esc(title)}</h2><div id="dlgBody">${body}</div>
+      <form method="dialog" class="dlg-actions" id="dlgForm">${buttons.map((b) => `<button value="${esc(b.value)}" class="${esc(b.kind || "")}"${b.focus ? " autofocus" : ""}>${esc(b.label)}</button>`).join("")}</form>`;
+    document.body.append(d);
+    d.addEventListener("click", (e) => { if (e.target === d) d.close(""); }); // click on the backdrop
+    d.addEventListener("close", () => { const v = d.returnValue; d.remove(); (opener || document.body).focus?.(); resolve(v); }, { once: true });
+    d.showModal();
+  });
+
+  // Sign-out asks first. Nothing is cleared until the person confirms. A professor teaching a live class
+  // is told exactly what happens to the class and the microphone.
+  L.signOutGuard = null;
+  L.confirmSignOut = async (opener) => {
+    const live = L.signOutGuard?.();
+    let v;
+    if (live) {
+      v = await L.dialog({ opener, title: "Sign out of Lost?",
+        body: `<p>Your class is live${live.micOn ? " and your microphone is on" : ""}.</p><p>Signing out always turns your microphone off on this computer. You can leave the class open, so students keep reading and asking for help, and end it after you sign back in. Or end it now, which writes the summary.</p>`,
+        buttons: [{ value: "stay", label: "Stay signed in", kind: "primary", focus: true }, { value: "mute", label: "Mic off, keep class open, sign out" }, { value: "end", label: "End class and sign out", kind: "danger" }] });
+      if (v === "mute") await live.muteMic();
+      if (v === "end") await live.endClass();
+      if (v !== "mute" && v !== "end") return;
+    } else {
+      v = await L.dialog({ opener, title: "Sign out of Lost?", body: `<p>You'll return to the sign-in screen.</p>`,
+        buttons: [{ value: "stay", label: "Stay signed in", kind: "primary", focus: true }, { value: "out", label: "Sign out" }] });
+      if (v !== "out") return;
+    }
+    await L.api("/api/auth/logout", { method: "POST" }).catch(() => {});
+    location.href = "/login";
+  };
 
   // ---------- router ----------
   // Each route returns nothing; it may register cleanup with L.onLeave(fn) (polls, recorders).

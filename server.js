@@ -22,7 +22,7 @@ const jobs = await import("./lib/jobs.js");
 const summary = await import("./lib/summary.js");
 const help = await import("./lib/help.js");
 const live = await import("./lib/live.js");
-const { sessionTheme } = await import("./lib/theme.js");
+const { sessionTheme, courseArt, ART_IDS, ART } = await import("./lib/theme.js");
 const { startEngine, engine } = await import("./engines.js");
 const { seedDemo, DEMO_USERS, DEMO_PASSWORD } = await import("./lib/seed.js");
 const QRCode = (await import("qrcode")).default;
@@ -316,14 +316,14 @@ route("GET", "/api/prof/courses", (ctx) => {
     const sections = all("SELECT id, name, join_code FROM sections WHERE course_id = ? ORDER BY name", c.id).map((s) => ({ ...s, students: one("SELECT COUNT(*) n FROM enrollments WHERE section_id = ?", s.id).n }));
     const active = one("SELECT * FROM lecture_sessions WHERE course_id = ? AND status IN ('ready', 'live', 'ending') ORDER BY created_at DESC LIMIT 1", c.id);
     const recent = one("SELECT * FROM lecture_sessions WHERE course_id = ? AND status = 'ended' ORDER BY ended_at DESC LIMIT 1", c.id);
-    return { id: c.id, name: c.name, code: c.code, term: c.term, source: c.source, sections, ...syncInfo(c.id), active: sessionCard(active), recent: sessionCard(recent) };
+    return { id: c.id, name: c.name, code: c.code, term: c.term, source: c.source, art: courseArt(c), sections, ...syncInfo(c.id), active: sessionCard(active), recent: sessionCard(recent) };
   }) };
 });
 route("GET", "/api/prof/courses/:id", (ctx) => {
   const u = needUser(ctx, "professor");
   const c = ownCourse(u, ctx.params.id);
   return {
-    course: { id: c.id, name: c.name, code: c.code, term: c.term, source: c.source, canvas_url: c.canvas_url, office_hours_url: c.office_hours_url, tutoring_url: c.tutoring_url, terms: c.terms },
+    course: { id: c.id, name: c.name, code: c.code, term: c.term, source: c.source, canvas_url: c.canvas_url, office_hours_url: c.office_hours_url, tutoring_url: c.tutoring_url, terms: c.terms, art: courseArt(c), artChosen: c.art || "" }, artChoices: ART_IDS.map((id) => ({ id, label: ART[id].label, icons: ART[id].icons })),
     sections: all("SELECT id, name, join_code FROM sections WHERE course_id = ? ORDER BY name", c.id).map((s) => ({ ...s, students: one("SELECT COUNT(*) n FROM enrollments WHERE section_id = ?", s.id).n })),
     materials: all(`SELECT id, source, external_type, title, url, kind, module, visibility, visibility_reason, use_in_class, status, warning, source_updated_at, synced_at,
       (SELECT COUNT(*) FROM passages p WHERE p.material_id = m.id) passages FROM materials m WHERE course_id = ? ORDER BY status = 'removed', module, title`, c.id),
@@ -341,7 +341,8 @@ route("POST", "/api/prof/courses/:id/settings", (ctx, b) => {
   const u = needUser(ctx, "professor");
   const c = ownCourse(u, ctx.params.id);
   const url = (v) => { v = String(v || "").trim(); if (!v) return ""; if (!/^https:\/\/[^\s<>"]+$/.test(v)) fail(400, "Links must start with https://"); return v.slice(0, 300); };
-  run("UPDATE courses SET office_hours_url = ?, tutoring_url = ?, terms = ? WHERE id = ?", url(b.office_hours_url), url(b.tutoring_url), String(b.terms ?? c.terms).slice(0, 8000), c.id);
+  const art = b.art === undefined ? c.art : ART_IDS.includes(b.art) ? b.art : "";
+  run("UPDATE courses SET office_hours_url = ?, tutoring_url = ?, terms = ?, art = ? WHERE id = ?", url(b.office_hours_url ?? c.office_hours_url), url(b.tutoring_url ?? c.tutoring_url), String(b.terms ?? c.terms).slice(0, 8000), art, c.id);
   return { ok: true };
 });
 route("POST", "/api/prof/courses/:id/notes", (ctx, b) => {
@@ -497,7 +498,9 @@ async function profAudio(ctx) {
   if (s.status !== "live") fail(409, "Class isn't live.");
   const buf = await readRaw(ctx.req, 512 * 1024);
   if (!buf) fail(413, "Too large.");
-  return { seq: live.audioPiece(s.id, buf, ctx.url.searchParams.get("first") === "1") };
+  const seq = live.audioPiece(s.id, buf, ctx.url.searchParams.get("first") === "1");
+  if (seq === null) fail(409, "Microphone is off.");
+  return { seq };
 }
 route("POST", "/api/prof/sessions/:id/audio", profAudio, { raw: true });
 route("DELETE", "/api/prof/sessions/:id/audio", profAudio, { raw: true });
@@ -520,12 +523,12 @@ route("POST", "/api/prof/courses/:id/materials", async (ctx) => {
 
 // --- student ---
 function studentCourses(u) {
-  return all(`SELECT c.id, c.name, c.code, c.term, c.source, s.id section_id, s.name section_name, e.source enrolled_by
+  return all(`SELECT c.id, c.name, c.code, c.term, c.source, c.art, c.terms, s.id section_id, s.name section_name, e.source enrolled_by
     FROM enrollments e JOIN sections s ON s.id = e.section_id JOIN courses c ON c.id = s.course_id WHERE e.user_id = ? ORDER BY c.code`, u.id).map((c) => {
     const active = one("SELECT id, title, status, started_at FROM lecture_sessions WHERE section_id = ? AND status IN ('live', 'ending') LIMIT 1", c.section_id);
     const last = one(`SELECT s.id, s.title, s.ended_at, ss.status summary FROM lecture_sessions s LEFT JOIN session_summaries ss ON ss.session_id = s.id
       WHERE s.section_id = ? AND s.status = 'ended' ORDER BY s.ended_at DESC LIMIT 1`, c.section_id);
-    return { ...c, active, last, stats: summary.studentStats(u.id, c.id) };
+    return { ...c, art: courseArt(c), terms: undefined, active, last, stats: summary.studentStats(u.id, c.id) };
   });
 }
 route("GET", "/api/student/courses", (ctx) => {
@@ -576,7 +579,7 @@ route("GET", "/api/student/sessions/:id/live", (ctx) => {
     audio: r.relay.header ? { id: r.relay.id, seq: r.relay.seq } : null,
     ai: aiAvailable(),
     theme: sessionTheme(s.id),
-    mine: all("SELECT id, t, self_status FROM confusion_events WHERE session_id = ? AND student_id = ? ORDER BY t", s.id, u.id),
+    mine: all("SELECT id, t, self_status, topic FROM confusion_events WHERE session_id = ? AND student_id = ? ORDER BY t", s.id, u.id),
   };
 });
 route("GET", "/api/student/sessions/:id/audio", async (ctx) => {
@@ -636,9 +639,23 @@ route("POST", "/api/student/events/:id/help", async (ctx, b) => {
 route("POST", "/api/student/events/:id/status", (ctx, b) => {
   const u = needUser(ctx, "student");
   const ev = ownEvent(u, ctx.params.id);
-  const st = b.status === "resolved" ? "resolved" : b.status === "still" ? "still" : fail(400, "Unknown status.");
+  // resolved = the student said they understand; still = asked for more; open = undo. Closing the
+  // help panel never calls this, so dismissing help never counts as understanding.
+  const st = ["resolved", "still", "open"].includes(b.status) ? b.status : fail(400, "Unknown status.");
   run("UPDATE confusion_events SET self_status = ?, resolved_at = ? WHERE id = ?", st, st === "resolved" ? now() : null, ev.id);
-  return { ok: true };
+  return { ok: true, previous: ev.self_status, status: st };
+});
+// One moment with the help it got, for reopening it during class ("My moments").
+route("GET", "/api/student/events/:id", (ctx) => {
+  const u = needUser(ctx, "student");
+  const ev = ownEvent(u, ctx.params.id);
+  const anchor = ev.anchor_line ?? ev.line_idx;
+  return {
+    event: { id: ev.id, t: ev.t, line_idx: ev.line_idx, status: ev.self_status, topic: ev.topic || "" },
+    line: anchor != null ? one("SELECT idx, t, text FROM transcript_lines WHERE session_id = ? AND idx = ?", ev.session_id, anchor) : null,
+    cards: all("SELECT id, kind, attempt, status, payload FROM help_responses WHERE event_id = ? AND kind != 'catchup' AND status IN ('ok', 'no_ai', 'failed') ORDER BY created_at", ev.id)
+      .map((r) => ({ id: r.id, kind: r.kind, attempt: r.attempt, status: r.status, payload: parse(r.payload) })),
+  };
 });
 route("POST", "/api/student/events/:id/check", async (ctx) => {
   const u = needUser(ctx, "student");
@@ -670,7 +687,7 @@ route("GET", "/api/student/sessions/:id", (ctx) => {
 
 // ---------- static pages ----------
 const PAGES = { "/": null, "/login": "login.html", "/prof": "prof.html", "/student": "student.html" };
-const STATIC = new Set(["style.css", "common.js", "visuals.js", "theme.js", "login.js", "prof.js", "student.js", "favicon.svg"]);
+const STATIC = new Set(["style.css", "common.js", "visuals.js", "theme.js", "keys.js", "login.js", "prof.js", "student.js", "favicon.svg"]);
 const TYPES = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml" };
 
 async function handle(req, res) {
