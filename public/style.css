@@ -395,7 +395,7 @@ svg .dot-students { fill: var(--ink); }
 .cite-warn::after { content: " !"; }
 .cite-static { cursor: default; display: inline-block; margin-top: 4px; }
 .cite-pop { margin-top: 6px; padding: 8px 10px; border-left: 3px solid var(--rule); background: var(--paper); border-radius: 0 var(--r) var(--r) 0; }
-.claim-warn { font-size: 13px; color: var(--warn); margin: 2px 0 0 !important; }
+.claim .claim-warn { font-size: 13px; font-weight: 400; line-height: 1.4; color: var(--warn); margin: 4px 0 0; max-width: none; }
 .marked-line summary { cursor: pointer; font-size: 14px; color: var(--soft); }
 .marked-line p { font-size: 14px; color: var(--soft); margin: 4px 0 0; }
 
@@ -530,3 +530,8 @@ text.v-clabel { stroke: none; font-size: 11px; font-weight: 700; }
 .rt-branch::before { content: ""; position: absolute; left: -14px; top: 11px; width: 12px; border-top: 2px solid var(--soft); }
 .rt-edge { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; color: var(--soft); margin: 0 0 3px !important; }
 .rt-alt .rt-edge { color: var(--warn); }
+.v-legendlist { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
+.v-legendlist li { display: flex; align-items: center; gap: 6px; }
+.v-sw { display: inline-block; width: 22px; border-top: 3px solid; }
+.v-sw-s { border-color: var(--good); } .v-sw-d { border-color: var(--link); }
+.v-sw.dashed { border-top-style: dashed; }

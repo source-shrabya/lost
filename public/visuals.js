@@ -31,7 +31,10 @@
 
   // ---------- zones: a labeled surface (rink, field, strip) ----------
   function zones(v) {
-    const W = 340, left = 12, right = W - 12, top = v.direction ? 34 : 14, bottom = top + (v.frame === "strip" ? 70 : 110);
+    // Layout rules that keep labels apart whatever positions the AI chose: region names along the top
+    // edge, mark labels under or over their dot (alternating when two are close), line names in two
+    // staggered rows under the surface, and arrow labels in their own rows under those.
+    const W = 340, left = 12, right = W - 12, top = v.direction ? 34 : 14, bottom = top + (v.frame === "strip" && !v.marks.length ? 70 : 118);
     const x = (at) => left + (at / 100) * (right - left);
     const clip = id("clip"), arrowId = id("arr");
     const rx = v.frame === "rink" ? 44 : v.frame === "field" ? 8 : 4;
@@ -40,27 +43,39 @@
       return `<rect x="${x(r.from)}" y="${top}" width="${w}" height="${bottom - top}" class="${i % 2 ? "v-region-b" : "v-region-a"}"/>
         <text x="${(x(r.from) + x(r.to)) / 2}" y="${top + 15}" class="v-rlabel" text-anchor="middle">${tspans(lines.slice(0, 2), (x(r.from) + x(r.to)) / 2, 12)}</text>`;
     }).join("");
+    const lineRow0 = bottom + 15;
     const lines = v.lines.map((l, i) => {
-      const lx = x(l.at), ty = bottom + 15 + (i % 2) * 14;
+      const lx = x(l.at), ty = lineRow0 + (i % 2) * 14;
       const anchor = l.at < 12 ? "start" : l.at > 88 ? "end" : "middle";
       return `<line x1="${lx}" x2="${lx}" y1="${top}" y2="${bottom}" class="v-line ${l.style === "dashed" ? "dashed" : ""}"/>
         <line x1="${lx}" x2="${lx}" y1="${bottom}" y2="${ty - 10}" class="v-leader"/>
         <text x="${lx}" y="${ty}" class="v-llabel" text-anchor="${anchor}">${esc(l.label)}</text>`;
     }).join("");
-    const laneY = { top: top + 36, middle: (top + bottom) / 2 + 6, bottom: bottom - 18 };
-    const pos = new Map(v.marks.map((m) => [m.id, { x: x(m.at), y: laneY[m.lane] || laneY.middle }]));
-    const arrows = v.arrows.map((a) => {
+    const laneY = { top: top + 40, middle: (top + bottom) / 2 + 8, bottom: bottom - 24 };
+    const pos = new Map(v.marks.map((m) => [m.id, { x: x(Math.min(97, Math.max(3, m.at))), y: laneY[m.lane] || laneY.middle }]));
+    // labels: below the dot unless a neighbour in the same lane is within 110px, then alternate above
+    const byX = [...v.marks].sort((a, b) => a.at - b.at), above = new Set();
+    byX.forEach((m, i) => {
+      const prev = byX[i - 1]; if (!prev) return;
+      const a = pos.get(prev.id), b = pos.get(m.id);
+      if (b.x - a.x >= 110) return;
+      if (a.y === b.y) { if (!above.has(prev.id)) above.add(m.id); }
+      else above.add(a.y < b.y ? prev.id : m.id); // different rows: the upper label goes over its dot
+    });
+    const marks = v.marks.map((m) => {
+      const p = pos.get(m.id), anchor = p.x < left + 70 ? "start" : p.x > right - 70 ? "end" : "middle";
+      const tx = anchor === "start" ? Math.max(left + 4, p.x - 6) : anchor === "end" ? Math.min(right - 4, p.x + 6) : p.x;
+      return `<circle cx="${p.x}" cy="${p.y}" r="6" class="v-mark"/><text x="${tx}" y="${above.has(m.id) ? p.y - 11 : p.y + 19}" class="v-mlabel" text-anchor="${anchor}">${esc(m.label)}</text>`;
+    }).join("");
+    const arrowRow0 = lineRow0 + (v.lines.length > 1 ? 28 : v.lines.length ? 14 : 0) + 6;
+    const arrows = v.arrows.map((a, i) => {
       const p = pos.get(a.from), q = pos.get(a.to), dir = Math.sign(q.x - p.x) || 1;
       const x1 = p.x + 8 * dir, x2 = q.x - 9 * dir, lift = Math.abs(q.y - p.y) < 4 ? 22 : 0;
       const mx = (x1 + x2) / 2, my = Math.min(p.y, q.y) - lift;
       return `<path d="M${x1},${p.y} Q${mx},${my - lift * 0.4} ${x2},${q.y}" class="v-arrow" marker-end="url(#${arrowId})"/>
-        ${a.label ? `<text x="${mx}" y="${my - lift * 0.4 - 6}" class="v-alabel" text-anchor="middle">${esc(a.label)}</text>` : ""}`;
+        ${a.label ? `<text x="${left}" y="${arrowRow0 + i * 14}" class="v-alabel"><tspan class="v-arrowkey">→</tspan> ${esc(a.label)}</text>` : ""}`;
     }).join("");
-    const marks = v.marks.map((m) => {
-      const p = pos.get(m.id), anchor = m.at < 15 ? "start" : m.at > 85 ? "end" : "middle";
-      return `<circle cx="${p.x}" cy="${p.y}" r="6" class="v-mark"/><text x="${p.x + (anchor === "start" ? -6 : anchor === "end" ? 6 : 0)}" y="${p.y + 19}" class="v-mlabel" text-anchor="${anchor}">${esc(m.label)}</text>`;
-    }).join("");
-    const H = bottom + 15 + (v.lines.length > 1 ? 14 : 0) + 8;
+    const H = arrowRow0 + v.arrows.filter((a) => a.label).length * 14 + 6;
     const svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(v.alt)}" class="v-svg">
       <defs><clipPath id="${clip}"><rect x="${left}" y="${top}" width="${right - left}" height="${bottom - top}" rx="${rx}"/></clipPath>
         <marker id="${arrowId}" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="v-arrowhead"/></marker></defs>
@@ -159,11 +174,12 @@
     const eqp = (e, i) => `<line x1="${X(e.q)}" x2="${X(e.q)}" y1="${Y(e.p)}" y2="${y1}" class="v-guide"/><line x1="${x0}" x2="${X(e.q)}" y1="${Y(e.p)}" y2="${Y(e.p)}" class="v-guide"/>
       <circle cx="${X(e.q)}" cy="${Y(e.p)}" r="4.5" class="v-eq ${i ? "v-eq2" : ""}"/><text x="${X(e.q) + 7}" y="${Y(e.p) - 6}" class="v-elabel2">E${i + 1}</text>
       <text x="${X(e.q)}" y="${y1 + 13}" class="v-tick" text-anchor="middle">Q${i + 1}</text><text x="${x0 - 5}" y="${Y(e.p) + 4}" class="v-tick" text-anchor="end">P${i + 1}</text>`;
-    // curve labels at the upper-right end of each line
-    const lab = (txt, q, p, cls) => `<text x="${Math.min(X(q) + 4, x1 - 2)}" y="${Y(p) + (cls === "v-supply" ? -4 : 12)}" class="v-clabel ${cls}" text-anchor="${X(q) + 4 > x1 - 40 ? "end" : "start"}">${esc(txt)}</text>`;
-    const labels = [lab(v.demand_label, 7.6, 0.4, "v-demand"), lab(v.supply_label, 7.6, 9.6, "v-supply")];
-    if (v.curve === "demand") labels.push(lab(`${v.demand_label} (new)`, Math.min(9.6, 7.6 + d), 0.4 + Math.max(0, 7.6 + d - 9.6), "v-demand"));
-    if (v.curve === "supply") labels.push(lab(`${v.supply_label} (new)`, Math.min(9.6, 7.6 - s), 9.6 - Math.max(0, 7.6 - s - 9.6), "v-supply"));
+    // short labels on the curves; full names go in the legend under the chart
+    const tag = (txt, q, p, cls, dy) => `<text x="${X(q)}" y="${Y(p) + dy}" class="v-clabel ${cls}" text-anchor="middle">${esc(txt)}</text>`;
+    const labels = [tag("D", 7.2, 0.8, "v-demand", 14), tag("S", 7.2, 9.2, "v-supply", -6)];
+    if (v.curve === "demand") labels.push(tag("D2", Math.min(9.4, 7.2 + d), 0.8 + Math.max(0, 7.2 + d - 9.4), "v-demand", 14));
+    if (v.curve === "supply") labels.push(tag("S2", Math.max(0.6, Math.min(9.4, 7.2 - s)), 9.2, "v-supply", -6));
+    const legend = `<ul class="v-legendlist"><li><span class="v-sw v-sw-s" aria-hidden="true"></span>S: ${esc(v.supply_label)}</li><li><span class="v-sw v-sw-d" aria-hidden="true"></span>D: ${esc(v.demand_label)}</li>${v.curve ? `<li><span class="v-sw v-sw-${v.curve === "demand" ? "d" : "s"} dashed" aria-hidden="true"></span>${v.curve === "demand" ? "D2" : "S2"}: after the shift</li>` : ""}</ul>`;
     let shiftArrow = "";
     if (v.after) {
       const p = v.curve === "demand" ? 6.5 : 7.5, qa = v.curve === "demand" ? 8 - p : p - 2, qb = qa + 2 * v.dir;
@@ -178,7 +194,7 @@
     </svg>`;
     const word = (w) => (w === "up" ? "rises" : w === "down" ? "falls" : "stays the same");
     const effect = v.effect ? `<p class="v-effect"><span><span class="v-dirmark" aria-hidden="true">${v.effect.price === "up" ? "▲" : v.effect.price === "down" ? "▼" : "■"}</span> ${esc(v.y_label)} ${word(v.effect.price)}</span><span><span class="v-dirmark" aria-hidden="true">${v.effect.quantity === "up" ? "▲" : v.effect.quantity === "down" ? "▼" : "■"}</span> ${esc(v.x_label)} ${word(v.effect.quantity)}</span></p>` : "";
-    return figure(v, `${svg}${v.cause ? `<p class="v-cause">${esc(v.cause)}</p>` : ""}${effect}`, { note: "Schematic, not to scale" });
+    return figure(v, `${svg}${legend}${v.cause ? `<p class="v-cause">${esc(v.cause)}</p>` : ""}${effect}`, { note: "Schematic, not to scale" });
   }
 
   // ---------- bit grid: sent vs received, with the failing row and column ----------
@@ -219,12 +235,13 @@
     : `<span class="src-kind">${esc(s.source === "demo" ? "Course material (demo)" : "Course material")}</span> ${L.safeUrl(s.url) ? `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title)}</a>` : esc(s.title)}${s.location && s.location !== s.title ? `, ${esc(s.location)}` : ""}${s.text ? `<q class="src-text">${esc(s.text.slice(0, 260))}${s.text.length > 260 ? "…" : ""}</q>` : ""}`}
     ${(s.flags || []).map((f) => `<span class="src-flag">${esc(f)}</span>`).join("")}</li>`;
   // A claim: its text, compact source chips, any warning about those sources, and a hidden pop-out with the quotes.
+  let warned = new Set();
   const claim = (c, cls = "") => {
     if (!c?.text) return "";
     const src = c.sources || [], pid = id("cite"), warn = src.find((s) => s.flags?.length);
     const chips = []; for (const s of src) { const lab = chipLabel(s), have = chips.find((x) => x.lab === lab); if (have) have.warn ||= !!s.flags?.length; else chips.push({ lab, s, warn: !!s.flags?.length }); }
     return `<div class="claim ${cls}"><p>${esc(c.text)}${chips.length ? ` <span class="cites">${chips.map(({ lab, s, warn }) => `<button type="button" class="cite${warn ? " cite-warn" : ""}" data-act="cite" data-for="${pid}" aria-expanded="false" aria-label="Source: ${s.type === "line" ? `lecture at ${fmt(s.t)}` : esc(s.title)}${warn ? ", may be unreliable" : ""}">${esc(lab)}</button>`).join("")}</span>` : ""}</p>
-      ${warn ? `<p class="claim-warn">Check this: ${esc(warn.flags[0])}</p>` : ""}
+      ${warn && !warned.has(warn.flags[0]) && warned.add(warn.flags[0]) ? `<p class="claim-warn">Check this: ${esc(warn.flags[0])} The sources marked ! have this problem.</p>` : ""}
       ${src.length ? `<div class="cite-pop" id="${pid}" hidden><ul>${src.map(sourceItem).join("")}</ul></div>` : ""}</div>`;
   };
   L.claim = claim;
@@ -239,7 +256,8 @@
     : ex.origin === "materials" ? `Example from course materials${ex.source?.title ? `: ${esc(ex.source.title)}${ex.source.location ? `, ${esc(ex.source.location)}` : ""}` : ""}` : "Example written by the AI";
 
   // The lesson card: one idea, strongest first. Used for live help and for each summary topic.
-  L.lesson = (raw, { kicker = "", headingLevel = 3, showTitle = true } = {}) => {
+  L.lesson = (raw, { kicker = "", headingLevel = 3, showTitle = true, keepWarnings = false } = {}) => {
+    if (!keepWarnings) warned = new Set();
     const p = upgrade(raw), h = `h${headingLevel}`, sub = `h${Math.min(6, headingLevel + 1)}`;
     const all = [p.takeaway, p.explanation, p.connection, ...(p.qualifications || []), ...(p.rule ? [p.rule.what_happened, p.rule.what_next, ...p.rule.when_differs] : [])].filter(Boolean).flatMap((c) => c.sources || []);
     const seen = new Set(), sources = all.filter((s) => (seen.has(s.id) ? false : seen.add(s.id)));
@@ -269,14 +287,14 @@
 
   // The after-class summary (version 2): overview, concept map, then topics to open one at a time.
   L.summaryV2 = (s, { headingLevel = 3 } = {}) => {
-    const h = `h${headingLevel}`;
+    const h = `h${headingLevel}`; warned = new Set();
     return `<div class="sum2">
       ${s.overview ? claim(s.overview, "sum-overview") : ""}
       ${s.map ? L.visual({ ...s.map, title: "How today's ideas connect" }) : ""}
       ${s.uncertain?.length ? `<div class="sum-unsure"><p class="lesson-label">What the recording leaves unclear</p>${s.uncertain.map((c) => claim(c)).join("")}</div>` : ""}
       <${h} class="sum-topics-h">Topics</${h}>
       ${s.topics.map((t, i) => `<details class="sum-topic"${i === 0 ? " open" : ""}><summary><span class="sum-t">${esc(t.title)}</span><span class="sum-k">${esc(t.key_idea?.text || "")}</span></summary>
-        ${L.lesson({ v: 2, title: t.title, takeaway: t.key_idea, explanation: t.explanation, visual: t.visual, example: t.example, qualifications: t.qualifications, enough: true }, { showTitle: false, headingLevel: headingLevel + 1 })}
+        ${L.lesson({ v: 2, title: t.title, takeaway: t.key_idea, explanation: t.explanation, visual: t.visual, example: t.example, qualifications: t.qualifications, enough: true }, { showTitle: false, headingLevel: headingLevel + 1, keepWarnings: true })}
       </details>`).join("")}
       ${s.concepts?.length ? `<details class="sum-terms"><summary>Terms (${s.concepts.length})</summary><dl class="lesson-terms">${s.concepts.map((c) => `<div><dt>${esc(c.term)}</dt><dd>${esc(c.definition)}</dd></div>`).join("")}</dl></details>` : ""}
       ${s.deadlines?.length ? `<div class="sum-deadlines"><p class="lesson-label">Deadlines mentioned</p>${s.deadlines.map((d) => claim(d)).join("")}</div>` : ""}
