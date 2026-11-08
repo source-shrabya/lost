@@ -32,26 +32,12 @@
         <li class="course-card">
           <div class="cc-head"><span class="cc-code">${esc(c.code)}</span>${c.source === "demo" ? `<span class="badge warn">Demo course</span>` : ""}</div>
           <h2><a href="#/course/${c.id}">${esc(c.name)}</a></h2>
-          <p class="note">${esc(c.section_name)} · joined ${c.enrolled_by === "code" ? "with a code" : "through Canvas"}</p>
-          <p class="cc-line">${c.active?.status === "live" ? `<span class="badge live">Live now</span>` : c.last ? `<span class="note">Last class ${when(c.last.ended_at)}${c.last.summary === "ready" ? " · summary ready" : ""}</span>` : `<span class="note">No classes yet</span>`}</p>
+          <p class="note">${esc(c.section_name)}</p>
+          <p class="cc-line">${c.active?.status === "live" ? `<span class="badge live">Live now</span>` : c.last ? `<span class="note">Last class ${when(c.last.ended_at)}${c.last.summary === "ready" ? " · summary ready" : ""}</span>` : `<span class="note">No lectures yet</span>`}</p>
           ${c.stats.unresolved ? `<p class="note">${c.stats.unresolved} moment${c.stats.unresolved === 1 ? "" : "s"} still unresolved</p>` : ""}
           ${c.active?.status === "live" ? `<a class="button gold" href="#/live/${c.active.id}">Enter today's class</a>` : `<a class="button" href="#/course/${c.id}">Open course</a>`}
-        </li>`).join("")}</ul>` : `<div class="empty-state"><p>You're not in any classes yet. Join with the code your professor shows, or link Canvas.</p></div>`}
-      <section class="panel join-box">
-        <h2>Join a class</h2>
-        <form id="joinForm" class="row"><label for="code" class="visually-hidden">Class code</label><input id="code" class="code-input" maxlength="8" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="CODE" required><button class="primary">Join</button></form>
-        <p class="note">The code adds you to your section. You only do this once per course; after that the class shows up here.</p>
-        <p id="joinErr" class="form-error" role="alert"></p>
-      </section>
-      <section class="panel">
-        <h2>Canvas</h2>
-        ${canvas ? `<p>Linked${canvas.mode === "demo" ? " to demo Canvas (sample data)" : ` to ${esc(canvas.host)}`}. Your Canvas sections are matched automatically.</p><button id="relink">Check Canvas again</button>`
-          : `<p class="note">Linking Canvas puts you in the right sections without codes. Lost never asks for your Canvas password; you approve access on Canvas itself.</p>
-            ${!st.institutionId ? `<p class="note">Your institution: ${esc(st.institutions[0].name)}.</p>` : ""}
-            ${st.oauth.ready ? `<button id="oauth" class="primary">Link Canvas</button>` : `<p class="note">Canvas sign-in isn't set up on this server yet (it needs a developer key from the university). Use your class code instead.</p>`}
-            ${st.demo ? `<button id="demoLink">Link demo Canvas (sample data)</button>` : ""}`}
-      </section>`;
-    $("#joinForm").onsubmit = (e) => { e.preventDefault(); location.hash = `#/join/${encodeURIComponent($("#code").value.trim().toUpperCase())}`; };
+        </li>`).join("")}</ul>` : `<div class="empty-state"><p>No classes yet. They show up here once your university connects them.</p></div>`}
+`;
     const link = async (mode) => {
       if (!st.institutionId) await api("/api/canvas/institution", { method: "POST", body: { institutionId: st.institutions[0].id } });
       const r = await api("/api/canvas/connect", { method: "POST", body: { mode } });

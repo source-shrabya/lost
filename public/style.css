@@ -574,3 +574,11 @@ body.student { isolation: isolate; }
 .more-actions > summary::-webkit-details-marker { display: none; }
 .more-actions[open] { display: flex; gap: 8px; flex-wrap: wrap; width: 100%; }
 .more-actions[open] > summary { display: none; }
+
+/* ---------- sign-in: email, then university ---------- */
+.linkish { background: none; border: 0; padding: 0; min-height: 0; color: var(--soft); font: inherit; font-weight: 700; cursor: pointer; }
+.linkish:hover { color: var(--ink); }
+.school-list { display: grid; gap: 10px; margin: 14px 0; }
+.school { display: flex; align-items: center; gap: 14px; text-align: left; padding: 14px 16px; font-size: 18px; font-weight: 700; border-radius: var(--r); }
+.school-mark { flex: none; width: 44px; height: 44px; border-radius: 10px; display: grid; place-items: center; background: var(--gold); color: var(--gold-ink); font-weight: 800; font-size: 15px; }
+.site-url { font-size: clamp(18px, 3.4vw, 28px) !important; overflow-wrap: anywhere; }

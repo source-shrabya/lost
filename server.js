@@ -163,6 +163,38 @@ route("POST", "/api/auth/login", (ctx, b) => {
   if (!auth.checkPassword(String(b.password || ""), u?.password_hash)) fail(401, "That email and password don't match.");
   return signIn(ctx, u.id);
 }, { open: true });
+// ---------- school-email sign-in ----------
+// Students sign in with their email and their university; no password. Real use would hand identity
+// and class lists to the university (SSO + Canvas). Until a university connects, every student is put
+// in all classes of the professor named in LOST_OPEN_CLASSES (an email), so the demo has classes.
+const OPEN_PROF = String(process.env.LOST_OPEN_CLASSES || "").trim().toLowerCase();
+function autoEnroll(userId) {
+  if (!OPEN_PROF) return;
+  const p = one("SELECT id FROM users WHERE email = ? AND role = 'professor'", OPEN_PROF);
+  if (!p) return;
+  for (const s of all("SELECT s.id FROM sections s JOIN courses c ON c.id = s.course_id WHERE c.owner_id = ?", p.id))
+    run("INSERT OR IGNORE INTO enrollments (user_id, section_id, source, created_at) VALUES (?, ?, 'code', ?)", userId, s.id, now());
+}
+const nameFromEmail = (email) => email.split("@")[0].split(/[._-]+/).filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join(" ").slice(0, 80) || "Student";
+route("GET", "/api/auth/institutions", () => ({ institutions: all("SELECT id, name FROM institutions ORDER BY name") }), { open: true });
+route("POST", "/api/auth/start", (ctx, b) => {
+  const email = String(b.email || "").trim().toLowerCase();
+  if (!allowed(`start:${email}`, 0.2, 10) || !allowed(`start-ip:${clientIp(ctx.req)}`, 2, 80)) fail(429, "Too many sign-in attempts. Wait a minute.");
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) fail(400, "Enter your school email.");
+  const inst = one("SELECT id FROM institutions WHERE id = ?", String(b.institution || "")) || fail(400, "Pick your university.");
+  const u = one("SELECT * FROM users WHERE email = ?", email);
+  if (u?.role === "professor") {
+    if (!b.password) return { needPassword: true };
+    if (!allowed(`login:${email}`, 0.1, 6)) fail(429, "Too many sign-in attempts. Wait a minute.");
+    if (!auth.checkPassword(String(b.password), u.password_hash)) fail(401, "That password doesn't match.");
+    run("UPDATE users SET institution_id = ? WHERE id = ?", inst.id, u.id);
+    return signIn(ctx, u.id);
+  }
+  const id = u?.id || auth.createUser({ email, name: nameFromEmail(email), role: "student", password: null });
+  run("UPDATE users SET institution_id = ?, onboarded = 1 WHERE id = ?", inst.id, id);
+  autoEnroll(id);
+  return signIn(ctx, id);
+}, { open: true });
 route("POST", "/api/auth/demo", (ctx, b) => {
   if (!DEMO) fail(404, "Demo accounts are off.");
   const d = DEMO_USERS.find((x) => x.key === b.who) || fail(400, "Unknown demo account.");
@@ -356,7 +388,7 @@ route("GET", "/api/prof/sessions/:id", async (ctx) => {
   return {
     session: { ...sessionCard(s), material_ids: parse(s.material_ids, []) },
     course: { id: c.id, name: c.name, code: c.code }, section: { id: sec.id, name: sec.name, join_code: sec.join_code, students: one("SELECT COUNT(*) n FROM enrollments WHERE section_id = ?", sec.id).n },
-    joinUrl, qr, demo: DEMO, ...statusBlock(s.id),
+    joinUrl, qr, site: publicBase(ctx.req), demo: DEMO, ...statusBlock(s.id),
     materials: all("SELECT id, title, visibility, status FROM materials WHERE course_id = ? AND status = 'ok' ORDER BY title", c.id),
   };
 });
@@ -498,6 +530,7 @@ function studentCourses(u) {
 }
 route("GET", "/api/student/courses", (ctx) => {
   const u = needUser(ctx, "student");
+  autoEnroll(u.id); // new classes from the open professor show up without signing in again
   const conn = canvas.connectionFor(u.id);
   return { courses: studentCourses(u), canvas: conn ? { mode: conn.mode, host: conn.canvas_host } : null };
 });

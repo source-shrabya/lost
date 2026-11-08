@@ -162,7 +162,7 @@
           </details>
           <button class="primary big">Set up class</button>
         </form>
-        <p class="note">Setting up doesn't start recording. You'll see the join code and QR first, then press Start.</p>
+        <p class="note">Setting up doesn't start recording. Press Start when you're ready.</p>
       </section>`;
     $("#newSession").onsubmit = async (e) => {
       e.preventDefault();
@@ -281,15 +281,14 @@
         </div>
       </div>
       <section class="join-panel" id="joinPanel">
-        <div class="qr" aria-hidden="true">${info.qr}</div>
-        <div><p class="sign-label">Join code</p><p class="sign-code">${esc(info.section.join_code)}</p>
-          <p class="note">Students sign in, then scan or open <b>${esc(info.joinUrl.replace(/^https?:\/\//, ""))}</b>. The code adds them to ${esc(info.section.name)}; while class is live they can enter it from their course page.</p>
+        <div><p class="sign-label">Students sign in at</p><p class="sign-code site-url">${esc(info.site.replace(/^https?:\/\//, ""))}</p>
+          <p class="note">${info.section.students} student${info.section.students === 1 ? "" : "s"} in ${esc(info.section.name)}. They sign in with their school email and land in this class when you press Start. No codes.</p>
           <div class="row"><button class="primary big" id="startBtn">Start class</button><button id="discard" class="quiet">Discard</button></div>
           <p class="note">Start turns on your mic. Your words become the transcript.</p></div>
       </section>
       <div class="teach" id="teach">
         <section class="panel transcript-panel">
-          <div class="row spread"><h2>Transcript</h2><div class="row"><button id="mic" class="tool">Mic off</button><button id="showCode" class="tool">Show join code</button><button id="endBtn" class="primary">End class</button></div></div>
+          <div class="row spread"><h2>Transcript</h2><div class="row"><button id="mic" class="tool">Mic off</button><button id="showCode" class="tool">Show sign-in link</button><button id="endBtn" class="primary">End class</button></div></div>
           <p class="note warn" id="micErr" role="status"></p>
           <div id="transcript" class="transcript" tabindex="0" aria-label="Transcript"></div>
           <p id="interim" class="interim"></p>
@@ -300,7 +299,7 @@
       <details class="panel diag"><summary>Setup and diagnostics</summary><div id="diag"></div>
         ${info.demo ? `<div class="demo-tools"><h3>Demo tools <span class="badge warn">sample text</span></h3><p class="note">Types a short sample lecture into the transcript. Those lines are stored as "sample", and the AI and the summary are told so. Say out loud that you're using it.</p><button id="sample">Play sample lecture</button></div>` : ""}
       </details>
-      <dialog id="codeDlg" class="code-dlg" aria-labelledby="codeDlgH"><h2 id="codeDlgH">Join ${esc(info.section.name)}</h2><div class="qr big-qr">${info.qr}</div><p class="sign-code">${esc(info.section.join_code)}</p><p>${esc(info.joinUrl.replace(/^https?:\/\//, ""))}</p><form method="dialog"><button class="primary">Close</button></form></dialog>`;
+      <dialog id="codeDlg" class="code-dlg" aria-labelledby="codeDlgH"><h2 id="codeDlgH">Students sign in at</h2><p class="sign-code site-url">${esc(info.site.replace(/^https?:\/\//, ""))}</p><p>With their school email. No codes.</p><form method="dialog"><button class="primary">Close</button></form></dialog>`;
 
     const paintPhase = () => {
       document.body.dataset.phase = S.status;
