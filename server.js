@@ -579,7 +579,7 @@ route("POST", "/api/student/events/:id/help", async (ctx, b) => {
   const u = needUser(ctx, "student");
   let ev = ownEvent(u, ctx.params.id);
   if (!allowed(`help:${u.id}`, 1, helpBurst())) fail(429, "Slow down a little: one help request at a time.");
-  const kind = ["explain", "retry", "prereq", "catchup"].includes(b.kind) ? b.kind : fail(400, "Unknown help kind.");
+  const kind = [...help.CARD_KINDS, "catchup"].includes(b.kind) ? b.kind : fail(400, "Unknown help kind.");
   if (kind === "explain") {
     // The student's choice of focus is saved once, on the first explanation.
     if (!one("SELECT 1 FROM help_responses WHERE event_id = ? AND kind = 'explain' AND status IN ('ok', 'no_ai')", ev.id)) {
@@ -635,7 +635,7 @@ route("GET", "/api/student/sessions/:id", (ctx) => {
 
 // ---------- static pages ----------
 const PAGES = { "/": null, "/login": "login.html", "/prof": "prof.html", "/student": "student.html" };
-const STATIC = new Set(["style.css", "common.js", "login.js", "prof.js", "student.js", "favicon.svg"]);
+const STATIC = new Set(["style.css", "common.js", "visuals.js", "login.js", "prof.js", "student.js", "favicon.svg"]);
 const TYPES = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml" };
 
 async function handle(req, res) {

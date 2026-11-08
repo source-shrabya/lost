@@ -22,6 +22,9 @@ const mat = await import("../lib/materials.js");
 
 let server, base;
 const prompts = [];
+const wire = (type, { items = [], links = [], rows = [], settings = {} } = {}) => ({ type, title: "T", alt: "", rows, links,
+  items: items.map((x) => ({ id: "", label: "", detail: "", kind: "", parent: "", at: 0, to: 0, lane: "", value: 0, unit: "", expr: "", ...x })),
+  settings: { frame: "", simplified: true, direction: "", mode: "", left_title: "", right_title: "", shift: "", x_label: "", y_label: "", supply_label: "", demand_label: "", cause: "", analogy: "", breaks_down: "", result_unit: "", stated_result: null, flip_row: -1, flip_col: -1, ...settings } });
 let aiMode = "ok", aiDelay = 0, aiCalls = 0;
 
 // Deterministic fake model: answers from the ids it finds in the prompt, plus deliberately bad
@@ -36,13 +39,18 @@ function fakeAi({ prompt, label }) {
     const pas = [...prompt.matchAll(/id="P(\d+)"/g)].map((m) => `P${m[1]}`);
     const marked = Number(prompt.match(/L(\d+) [^\n]*<<< student is lost here/)?.[1] ?? lines.at(-1) ?? 0);
     if (label.startsWith("help:")) {
+      const claim = (text, refs) => ({ text, refs });
       return {
-        enough_evidence: aiMode !== "thin", clarify_question: aiMode === "thin" ? "Which word was unclear?" : "", topic: "Two-dimensional parity",
-        explanation: { text: "Rows and columns each get a parity bit.", terms: [{ term: "parity bit", definition: "an extra bit that makes the count of 1s even" }],
-          example: { text: "Grid 1010 / 1100", origin: "lecture", ref: `L${marked}` } },
-        context: { text: "It builds on single parity.", refs: [`L${marked}`, ...pas.slice(0, 1), "P99999", "L9999"] },
-        flow: { previous: lines.length > 1 ? { label: "Single parity", ref: `L${lines[0]}` } : null, current: { label: "2D parity", ref: `L${marked}` },
-          next: { label: "Guessed future topic", ref: `L${lines[0]}` } },
+        enough_evidence: aiMode !== "thin", clarify_question: aiMode === "thin" ? "Which word was unclear?" : "",
+        title: "How does 2D parity find the bit?",
+        takeaway: claim("The failing row and failing column cross at the flipped bit.", [`L${marked}`, "L9999"]),
+        explanation: claim("Each row and column carries its own parity bit.", [`L${marked}`, ...pas.slice(0, 1), "P99999"]),
+        terms: [{ term: "parity bit", definition: "an extra bit that makes the count of 1s even" }],
+        example: { text: "Grid 1010 / 1100", why: "Only one row and one column break.", origin: "lecture", ref: `L${marked}` },
+        rule: { what_happened: claim("One bit flips.", [`L${marked}`]), what_next: claim("Its row and column fail.", [`L${marked}`]), when_differs: [claim("Two flips in one row hide each other.", [])] },
+        qualifications: [], uncertainty: "", connection: claim("It builds on single parity.", [`L${lines[0]}`]),
+        visual: aiMode === "badvisual" ? wire("decision", { items: [{ id: "a", label: "Flip?", kind: "outcome" }, { id: "b", label: "x", kind: "outcome" }], links: [{ from: "a", to: "b", label: "" }] })
+          : wire("bit_grid", { rows: ["1010", "1100", "0111"], settings: { flip_row: 1, flip_col: 2 } }),
         diagnostic: label === "help:explain" ? { question: "What does one parity bit catch?", choices: ["one flipped bit", "two flipped bits", "nothing"], correct_index: 0, prerequisite: "single parity" } : null,
       };
     }
@@ -51,11 +59,14 @@ function fakeAi({ prompt, label }) {
     if (label === "summary") {
       const moments = [...prompt.matchAll(/Moment (\d+):/g)];
       return {
-        main_topics: [{ title: "2D parity", text: "Grids of parity bits.", refs: [`L${lines[0]}`] }],
-        concepts: [{ term: "Parity", definition: "even count of ones", refs: [] }],
-        examples: [{ text: "Invented example", origin: "lecture", refs: ["L9999"] }],
-        flow: { title: "Build-up", steps: [{ label: "Parity", ref: `L${lines[0]}` }, { label: "2D parity", ref: `L${lines.at(-1)}` }] },
+        overview: { text: "Today: catching and fixing flipped bits.", refs: [`L${lines[0]}`] },
+        concept_map: { nodes: [{ id: "a", label: "Parity" }, { id: "b", label: "2D parity" }], edges: [{ from: "a", to: "b", label: "leads to" }] },
+        topics: [{ title: "2D parity", key_idea: { text: "Grids of parity bits.", refs: [`L${lines[0]}`] }, explanation: { text: "", refs: [] },
+          visual: wire("calculation", { items: [{ id: "ones", label: "Ones in the row", value: 3, kind: "input" }, { id: "parity", label: "Parity bit", expr: "ones - 2", kind: "step" }], settings: { stated_result: 5 } }),
+          example: { text: "Invented example", why: "", origin: "lecture", refs: ["L9999"] }, qualifications: [] }],
+        terms: [{ term: "Parity", definition: "even count of ones", refs: [] }],
         deadlines: [{ text: "Homework due Friday", refs: ["P99999"] }],
+        uncertain: [],
         moments: moments.map(() => ({ topic: "2D parity", evidence: [`L${lines[0]}`], review: { question: "Which check fails?", choices: ["row", "none", "all"], correct_index: 0, why: "A flipped bit breaks its row." } })),
       };
     }
@@ -269,11 +280,15 @@ test("the full help flow: explain, cleaned citations, diagnostic, retry, check, 
   const r = (await jordan.post(`/api/student/events/${tap.event.id}/help`, { kind: "explain", anchor: "phrase", line: 1, category: "reasoning" })).data;
   assert.equal(r.status, "ok");
   const card = r.payload;
-  assert.equal(card.explanation.example.origin, "lecture");
-  assert.equal(card.explanation.example.source.idx, 1);
-  assert.ok(card.context.sources.every((s) => s.id !== "P99999" && s.id !== "L9999"), "invented citations removed");
-  assert.equal(card.flow.next, null, "a 'next' that wasn't said after the line is dropped");
-  assert.equal(card.flow.previous.source.idx, 0);
+  assert.equal(card.v, 2);
+  assert.equal(card.example.origin, "lecture");
+  assert.equal(card.example.source.idx, 1);
+  assert.ok(card.takeaway.sources.every((s) => s.id !== "P99999" && s.id !== "L9999"), "invented citations removed");
+  assert.equal(card.explanation, null, "a rule card doesn't repeat the rule as a separate explanation");
+  assert.equal(card.connection.sources[0].idx, 0);
+  assert.equal(card.rule.when_differs.length, 1, "the exception stays attached to the rule");
+  assert.equal(card.visual.type, "bit_grid");
+  assert.deepEqual([card.visual.failRow, card.visual.failCol], [1, 2], "Lost computes which row and column fail");
   assert.ok(card.diagnostic && card.diagnostic.correct_index === undefined, "answer stays on the server");
   // asking again returns the stored card, no new AI call
   const calls = aiCalls;
@@ -399,7 +414,10 @@ test("ending class while a help request is running; summary after a restart; no 
   const rep = (await rivera.get(`/api/prof/sessions/${sid}/report`)).data;
   assert.equal(rep.summary.status, "ready");
   assert.equal(rep.summary.payload.shared.deadlines.length, 0, "a deadline without a real source is dropped");
-  assert.equal(rep.summary.payload.shared.examples[0].origin, "ai", "an example citing a missing line is relabelled");
+  assert.equal(rep.summary.payload.shared.topics[0].example.origin, "ai", "an example citing a missing line is relabelled");
+  assert.equal(rep.summary.payload.shared.topics[0].visual.result, 1, "Lost computes the result itself");
+  assert.equal(rep.summary.payload.shared.topics[0].visual.mismatch, true, "a wrong stated answer is flagged");
+  assert.equal(rep.summary.payload.shared.map.nodes.length, 2);
   // run it again: same summary, still one notification per person
   jobs.enqueue("summary", sid, { restart: true });
   await drain();
@@ -541,4 +559,25 @@ test("transcript lag: a tap re-matches to the line that was being said, and keep
   assert.equal(db.one("SELECT line_idx FROM confusion_events WHERE id = ?", tap.event.id).line_idx, e);
   live.runtime(sid).interim = "";
   await endAndSummarise(rivera, sid);
+});
+
+test("visual specs are checked and computed by Lost, never trusted as given", async () => {
+  const v = await import("../lib/visuals.js");
+  assert.equal(v.evaluate("P * (1 + r / n) ^ (n * t)", { P: 1000, r: 0.05, n: 12, t: 10 }).toFixed(2), "1647.01");
+  assert.throws(() => v.evaluate("alert(1)", {}), "names that aren't inputs are refused");
+  assert.throws(() => v.evaluate("constructor.constructor", {}));
+  assert.equal(v.cleanVisual({ type: "script", title: "x" }).ok, false, "unknown visual types are rejected");
+  assert.equal(v.cleanVisual({ type: "bit_grid", title: "", data_rows: ["10", "1x"], flip: null, alt: "" }).ok, false, "bad bits are rejected");
+  const loop = v.cleanVisual({ type: "concept_map", title: "", nodes: [{ id: "a", label: "A" }, { id: "b", label: "B" }], edges: [{ from: "a", to: "b", label: "" }, { from: "b", to: "a", label: "" }], alt: "" });
+  assert.equal(loop.ok, false, "a map that goes in a circle is rejected");
+  const exceptionAsStep = v.cleanVisual({ type: "decision", title: "", nodes: [{ id: "q", label: "Iced?", kind: "question" }, { id: "o", label: "Faceoff", kind: "outcome" }, { id: "e", label: "Unless shorthanded", kind: "outcome" }], edges: [{ from: "q", to: "o", label: "Yes" }, { from: "o", to: "e", label: "then" }], alt: "" });
+  assert.equal(exceptionAsStep.ok, false, "an exception can't hang off an outcome as a later step");
+  const z = v.cleanVisual({ type: "zones", title: "Icing", frame: "rink", simplified: false, direction: "Attack", regions: [{ label: "Your end", from: -20, to: 40 }],
+    lines: [{ label: "Center line", at: 50, style: "solid" }], marks: [{ id: "p", label: "Puck", at: 30, lane: "middle" }, { id: "g", label: "Past goal line", at: 95, lane: "middle" }],
+    arrows: [{ from: "p", to: "g", label: "untouched" }, { from: "p", to: "nowhere", label: "" }], alt: "" });
+  assert.equal(z.ok, true); assert.equal(z.visual.regions[0].from, 0, "positions are clamped"); assert.equal(z.visual.arrows.length, 1, "arrows to unknown marks are dropped");
+  const m = v.cleanVisual({ type: "market", title: "", x_label: "Loanable funds", y_label: "Interest rate", supply_label: "Saving", demand_label: "Investment", shift: "demand_right", cause: "", alt: "" });
+  assert.deepEqual(m.visual.effect, { price: "up", quantity: "up" }, "a demand increase raises price and quantity");
+  const long = v.cleanVisual({ type: "process", title: "", steps: [{ label: "x".repeat(200), detail: "" }, { label: "b", detail: "" }], alt: "" });
+  assert.ok(long.visual.steps[0].label.length <= 40, "labels are clipped");
 });

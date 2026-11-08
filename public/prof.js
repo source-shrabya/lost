@@ -542,6 +542,7 @@
   }
   function sharedSummary(s) {
     if (!s) return "";
+    if (s.v === 2) return Lost.summaryV2(s);
     return `<div class="summary">
       ${s.main_topics.map((x) => `<article><h3>${esc(x.title)}</h3><p>${esc(x.text)}</p>${Lost.sources(x.sources)}</article>`).join("")}
       ${Lost.steps(s.flow)}
