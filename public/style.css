@@ -95,7 +95,10 @@ details > summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
 main { max-width: 1120px; margin: 0 auto; padding: 24px 24px 96px; }
 .page-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
 .page-head h1, .page-head h2 { margin: 0; }
-.crumb { margin: 0 0 4px; font-size: 15px; }
+.crumb { margin: 0 0 6px; font-size: 14px; }
+.crumb a { color: var(--soft); text-decoration: none; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px 6px 8px; margin-left: -8px; border-radius: 8px; }
+.crumb a::before { content: "\2190"; font-size: 15px; line-height: 1; }
+.crumb a:hover { color: var(--ink); background: var(--rule); }
 .panel { background: var(--panel); border: 1.5px solid var(--rule); border-radius: var(--r); padding: 18px 20px; margin: 16px 0; }
 .panel.highlight { border-color: var(--gold); border-width: 2px; }
 .empty-state { color: var(--soft); padding: 18px 0; }

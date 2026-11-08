@@ -155,7 +155,7 @@
         <form id="newSession" class="stack">
           <label for="sec">Section</label>
           <select id="sec">${d.sections.map((s) => `<option value="${s.id}">${esc(s.name)} (${s.students} students)</option>`).join("")}</select>
-          <label for="ltitle">Today's topic (optional)</label><input id="ltitle" placeholder="Error detection">
+          <label for="ltitle">Today's topic (optional)</label><input id="ltitle" placeholder="For example: the basic rules">
           <details><summary>Lecture materials for the AI to use (${usable.length} available)</summary>
             <p class="note">Picked materials rank first when Lost explains something. Professor-only materials are never quoted to students.</p>
             ${usable.map((m) => `<label class="inline mat-pick"><input type="checkbox" name="mat" value="${m.id}"> ${esc(m.title)} ${m.visibility === "staff" ? `<span class="badge">Professor only</span>` : ""}</label>`).join("") || `<p class="note">No materials yet. <a href="#/course/${d.course.id}/materials">Add some</a>.</p>`}

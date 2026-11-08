@@ -2,11 +2,29 @@
 (function () {
   const { $, $$, esc, fmt, when, ago, api, toast, safeUrl } = Lost;
 
+  // Send a student straight into a class the moment it is live. Each live class is entered automatically
+  // once per browser tab, so pressing back to "Your classes" doesn't bounce them in again.
+  const entered = (() => { try { return new Set(JSON.parse(sessionStorage.getItem("lost-entered") || "[]")); } catch { return new Set(); } })();
+  function enterLive(sid) {
+    if (!sid || entered.has(sid)) return false;
+    entered.add(sid);
+    try { sessionStorage.setItem("lost-entered", JSON.stringify([...entered])); } catch {}
+    location.hash = `#/live/${sid}`;
+    return true;
+  }
+
   // ================= home =================
   async function home(app, _, params) {
     if (params.canvas) toast(params.canvas === "ok" ? "Canvas linked. Your classes are matched to your sections." : `Canvas: ${params.canvas}`, params.canvas === "ok" ? "" : "error");
     const [{ courses, canvas }, st] = await Promise.all([api("/api/student/courses"), api("/api/canvas/status")]);
     const live = courses.filter((c) => c.active?.status === "live");
+    if (live.length === 1 && enterLive(live[0].active.id)) return;
+    Lost.poll(async (signal) => {
+      const r = await api("/api/student/courses", { signal });
+      const now = r.courses.filter((c) => c.active?.status === "live" && !entered.has(c.active.id));
+      if (now.length === 1) enterLive(now[0].active.id);
+      else if (now.length > 1 || r.courses.length !== courses.length) Lost.render();
+    }, 3000);
     app.innerHTML = `
       <h1>Your classes</h1>
       ${live.map((c) => `<a class="live-banner" href="#/live/${c.active.id}"><span class="dot live" aria-hidden="true"></span><span><b>${esc(c.code)} is live now</b><span>${esc(c.section_name)} · tap to enter today's class</span></span></a>`).join("")}
@@ -49,20 +67,30 @@
   // ================= join =================
   async function join(app, [code]) {
     app.innerHTML = `<h1>Joining class ${esc(code)}</h1><p class="note">Checking the code…</p>`;
-    try {
-      const r = await api("/api/student/join", { method: "POST", body: { code } });
-      app.innerHTML = `<h1>You're in ${esc(r.course.code)}</h1>
-        <section class="panel"><p>You joined <b>${esc(r.section.name)}</b> of ${esc(r.course.name)}. This course now shows on your home page.</p>
-        ${r.activeSession ? `<p>Class is live right now.</p><a class="button gold big" href="#/live/${r.activeSession}">Enter today's class</a>` : `<p class="note">No class is running right now. When your professor starts one, it shows up on your home page.</p><a class="button primary" href="#/course/${r.course.id}">Open the course</a>`}</section>`;
-    } catch (e) {
-      app.innerHTML = `<h1>Couldn't join</h1><section class="panel"><p class="form-error">${esc(e.message)}</p><a class="button" href="#/">Back</a></section>`;
-    }
+    let r;
+    try { r = await api("/api/student/join", { method: "POST", body: { code } }); }
+    catch (e) { app.innerHTML = `<h1>Couldn't join</h1><section class="panel"><p class="form-error">${esc(e.message)}</p><a class="button" href="#/">Back</a></section>`; return; }
+    if (r.activeSession) { entered.add(r.activeSession); location.replace(`#/live/${r.activeSession}`); return; }
+    app.innerHTML = `<h1>You're in ${esc(r.course.code)}</h1>
+      <section class="panel waiting">
+        <p><span class="dot live" aria-hidden="true"></span> <b>Waiting for class to start.</b></p>
+        <p class="note">Keep this page open. You'll go into ${esc(r.course.name)} by yourself as soon as your professor starts.</p>
+      </section>`;
+    Lost.poll(async (signal) => {
+      const d = await api(`/api/student/courses/${r.course.id}`, { signal });
+      if (d.active?.status === "live") { entered.add(d.active.id); location.replace(`#/live/${d.active.id}`); }
+    }, 2500);
   }
 
   // ================= course =================
   const catName = (k) => ({ term: "A term", reasoning: "A reasoning step", connection: "A connection", missed: "Missed what was said" }[k] || "");
   async function course(app, [id]) {
     const d = await api(`/api/student/courses/${id}`);
+    if (d.active?.status === "live" && enterLive(d.active.id)) return;
+    if (!d.active) Lost.poll(async (signal) => {
+      const n = await api(`/api/student/courses/${id}`, { signal });
+      if (n.active?.status === "live") enterLive(n.active.id) || Lost.render();
+    }, 3000);
     const c = d.course, s = d.stats;
     app.innerHTML = `
       <p class="crumb"><a href="#/">Your classes</a></p>
