@@ -22,6 +22,7 @@ const jobs = await import("./lib/jobs.js");
 const summary = await import("./lib/summary.js");
 const help = await import("./lib/help.js");
 const live = await import("./lib/live.js");
+const { sessionTheme } = await import("./lib/theme.js");
 const { startEngine, engine } = await import("./engines.js");
 const { seedDemo, DEMO_USERS, DEMO_PASSWORD } = await import("./lib/seed.js");
 const QRCode = (await import("qrcode")).default;
@@ -541,6 +542,7 @@ route("GET", "/api/student/sessions/:id/live", (ctx) => {
     gaps: all("SELECT from_t, to_t FROM transcript_gaps WHERE session_id = ? ORDER BY from_t", s.id),
     audio: r.relay.header ? { id: r.relay.id, seq: r.relay.seq } : null,
     ai: aiAvailable(),
+    theme: sessionTheme(s.id),
     mine: all("SELECT id, t, self_status FROM confusion_events WHERE session_id = ? AND student_id = ? ORDER BY t", s.id, u.id),
   };
 });
@@ -630,12 +632,12 @@ route("POST", "/api/student/events/:id/office-hours", (ctx, b) => {
 route("GET", "/api/student/sessions/:id", (ctx) => {
   const u = needUser(ctx, "student");
   const s = enrolledSession(u, ctx.params.id);
-  return summary.studentSessionView(s.id, u.id);
+  return { ...summary.studentSessionView(s.id, u.id), theme: sessionTheme(s.id) };
 });
 
 // ---------- static pages ----------
 const PAGES = { "/": null, "/login": "login.html", "/prof": "prof.html", "/student": "student.html" };
-const STATIC = new Set(["style.css", "common.js", "visuals.js", "login.js", "prof.js", "student.js", "favicon.svg"]);
+const STATIC = new Set(["style.css", "common.js", "visuals.js", "theme.js", "login.js", "prof.js", "student.js", "favicon.svg"]);
 const TYPES = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml" };
 
 async function handle(req, res) {

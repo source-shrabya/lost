@@ -129,7 +129,7 @@
           <span class="status"><span class="dot" id="dot"></span><span id="statusText">Connecting…</span></span>
         </header>
         <div class="room-main">
-          <button class="lostbtn" id="lost" disabled><span class="lost-main">I'm lost</span><span class="lost-sub">Tap, then keep listening</span></button>
+          <button class="lostbtn" id="lost" disabled><span class="lost-main">I'm lost</span><span class="lost-sub">Anonymous. Class keeps going.</span></button>
           <p id="ack" class="ack" aria-live="polite"></p>
           <div class="tools"><button id="listen" class="tool" disabled>Listen to class</button><button id="showT" class="tool" aria-expanded="false" aria-controls="tpanel">Show transcript</button></div>
           <p id="listenNote" class="note center"></p>
@@ -150,7 +150,7 @@
         const same = H.ev?.id === r.event.id;
         if (!same) { H.ev = r.event; H.phrases = r.phrases; H.now = r.now || null; H.cards = []; H.picked = null; H.catchups = 0; H.retries = 0; H.tries = {}; H.seq++; }
         st.ai = r.ai;
-        $("#ack").textContent = `Marked at ${fmt(r.event.t)}.${r.others ? ` ${r.others} other${r.others === 1 ? "" : "s"} tapped in the last 90 seconds.` : ""} Your professor sees the moment, not your name.`;
+        $("#ack").textContent = `Marked at ${fmt(r.event.t)}${r.others ? ` · ${r.others} other${r.others === 1 ? "" : "s"} too` : ""}`;
         if (!same) showPicker(r.gaps);
         else $("#help").scrollIntoView({ behavior: "smooth", block: "start" });
       } catch (e) { toast(e.message, "error"); }
@@ -160,19 +160,18 @@
     function showPicker(gaps) {
       const box = $("#help"); box.hidden = false;
       box.innerHTML = `
-        <div class="help-head"><h2 id="helpH">What lost you?</h2><button class="quiet" id="closeHelp">Just mark it</button></div>
-        <p class="note">Your tap is saved. Pick a line or keep the default, and get a short explanation while class goes on.</p>
-        ${gaps?.length ? `<p class="note warn">Part of the last minute wasn't transcribed (no audio reached Lost).</p>` : ""}
+        <div class="help-head"><h2 id="helpH">Which line lost you?</h2><button class="quiet" id="closeHelp">Skip</button></div>
+        ${gaps?.length ? `<p class="note warn">Some audio is missing from the last minute.</p>` : ""}
         <div class="phrase-list" role="group" aria-label="Recent lines from the lecture">
           ${H.phrases.map((p) => `<button class="phrase" data-line="${p.idx}"><time>${fmt(p.t)}</time>${esc(p.text)}</button>`).join("")}
-          ${H.now ? `<button class="phrase phrase-now" data-now><span class="now-label">Being said when you tapped</span>${esc(H.now)}…</button>` : ""}
+          ${H.now ? `<button class="phrase phrase-now" data-now><span class="now-label">Right now</span>${esc(H.now)}…</button>` : ""}
           ${!H.phrases.length && !H.now ? `<p class="note">Nothing has been transcribed yet.</p>` : ""}
         </div>
         <div class="row">
-          <button class="primary" id="explainCurrent">${H.phrases.length ? "Explain the current topic" : "Get help"}</button>
+          <button class="primary" id="explainCurrent">${H.phrases.length ? "Just explain what's happening" : "Get help"}</button>
           <button id="explainEarlier">It started earlier</button>
         </div>
-        <details class="optional"><summary>Add detail (optional)</summary>
+        <details class="optional"><summary>Ask your own question</summary>
           <fieldset class="chips-field"><legend>What kind of confusion?</legend>
             ${[["term", "A term"], ["reasoning", "A reasoning step"], ["connection", "How it connects"], ["missed", "I missed what was said"]].map(([k, l]) => `<label class="chip"><input type="radio" name="cat" value="${k}"> ${l}</label>`).join("")}
           </fieldset>
@@ -191,7 +190,7 @@
       const seq = H.seq;
       const body = { kind: "explain", anchor, line, category: $("input[name=cat]:checked")?.value || null, question: $("#q")?.value.trim() || null };
       H.picked = picked || (line != null ? H.phrases.find((p) => p.idx === line) : null);
-      $("#help").innerHTML = `<div class="help-head"><h2 id="helpH">Getting help…</h2></div>${H.picked ? `<p class="note">You marked: "${esc(H.picked.text)}"</p>` : ""}<p class="note help-wait">Reading the lecture and course materials…</p>`;
+      $("#help").innerHTML = `<div class="help-head"><h2 id="helpH">Getting help…</h2></div>${H.picked ? `<p class="note">"${esc(H.picked.text)}"</p>` : ""}<p class="note help-wait">Thinking…</p>`;
       const r = await request(body);
       if (seq !== H.seq) return; // a newer tap replaced this one
       if (r) { H.cards = [r]; paintHelp(); }
@@ -208,15 +207,15 @@
       const box = $("#help"), first = H.cards[0]?.payload;
       const title = first?.v === 2 ? first.title : first?.topic;
       box.innerHTML = `<div class="help-head"><h2 id="helpH">${esc(title || "Here's help")}</h2><button class="quiet" id="closeHelp">Close</button></div>
-        ${H.picked ? `<details class="marked-line"><summary>You marked ${H.picked.t != null ? fmt(H.picked.t) : "the line being said"} (as transcribed)</summary><p>"${esc(H.picked.text)}"</p></details>` : ""}
+        
         ${H.cards.map((c, i) => cardHtml(c, i)).join("")}
         <div id="afterCards"></div>
         <div class="help-actions" id="helpActions">
           <button class="primary" data-h="helped">Got it</button>
-          ${st.ai ? `<button data-h="retry">Explain differently</button><button data-h="steps">Show the steps</button>` : ""}
-          <button data-h="still">Still confused</button>
+          <button data-h="still">Still lost</button>
+          ${st.ai ? `<button data-h="retry">Another way</button>` : ""}
           <button data-h="catchup">Catch me up</button>
-          ${st.ai ? `<button class="quiet" data-h="check">Quiz me</button>` : ""}
+          ${st.ai ? `<details class="more-actions"><summary>Other help</summary><button data-h="steps">Show the steps</button><button data-h="check">Quiz me</button></details>` : ""}
         </div>
         <p class="note" id="sinceTap"></p>
         <div id="catchupBox" aria-live="polite"></div>`;
@@ -237,7 +236,7 @@
       }
       return `<div class="card-block" data-i="${i}">${Lost.lesson(p, { kicker: label, showTitle: i > 0, headingLevel: 3 })}${p.diagnostic ? diagHtml(p.diagnostic) : ""}</div>`;
     }
-    const diagHtml = (d) => `<form class="check" data-check="${d.id}" data-kind="diagnostic"><fieldset><legend><b>Quick check</b> (to find what to explain next): ${esc(d.question)}</legend>
+    const diagHtml = (d) => `<form class="check" data-check="${d.id}" data-kind="diagnostic"><fieldset><legend><b>Quick check:</b> ${esc(d.question)}</legend>
       ${d.choices.map((ch, k) => `<label class="choice"><input type="radio" name="d-${d.id}" value="${k}"> ${esc(ch)}</label>`).join("")}</fieldset>
       <div class="row"><button class="primary">Answer</button><button type="button" class="quiet" data-skip>Skip</button></div><p class="check-result" aria-live="polite"></p></form>`;
 
@@ -269,7 +268,7 @@
     async function action(kind, btn) {
       if (kind === "helped") {
         await api(`/api/student/events/${H.ev.id}/status`, { method: "POST", body: { status: "resolved" } });
-        $("#helpActions").innerHTML = `<p class="note">Marked as resolved. Back to class: tap I'm lost again any time.</p><button data-h="catchup" class="primary">Catch me up to now</button>`;
+        $("#helpActions").innerHTML = `<p class="note">Nice. Tap I'm lost any time.</p><button data-h="catchup" class="primary">Catch me up</button>`;
         toast("Marked resolved.");
       }
       if (kind === "retry" || kind === "steps" || kind === "still") {
@@ -311,7 +310,7 @@
     function paintSince() {
       const el = $("#sinceTap"); if (!el || !H.ev) return;
       const n = st.lastIdx == null ? 0 : st.lastIdx - (H.ev.line_idx ?? -1);
-      el.textContent = st.status === "live" ? `${Math.max(0, n)} new line${n === 1 ? "" : "s"} since your tap at ${fmt(H.ev.t)}. Class is at ${fmt(st.clock)}.` : st.status === "ended" ? "Class has ended. Your summary will cover this moment." : "";
+      el.textContent = st.status === "live" ? `Class is at ${fmt(st.clock)}${n > 0 ? ` · ${n} new line${n === 1 ? "" : "s"} since your tap` : ""}` : st.status === "ended" ? "Class has ended. Your summary will cover this moment." : "";
     }
 
     // ---------- transcript (only fetched while open) ----------
@@ -344,6 +343,7 @@
         else if (d.status === "live" && !$("#ack").textContent) $("#ack").textContent = "Nobody sees who tapped.";
       }
       st.clock = d.clock; st.lastIdx = d.lastIdx; st.ai = d.ai;
+      Lost.backdrop(d.theme);
       if (d.lines) { if (d.full) st.lines = []; for (const l of d.lines) st.lines[l.idx] = l; st.since = st.lines.length; st.rev = d.rev; const nowChanged = (d.now || "") !== st.now; st.now = d.now || ""; if (d.lines.length || d.full || nowChanged) paintLines(); }
       paintSince();
       handleAudio(d);
@@ -407,6 +407,7 @@
     const draw = async () => {
       const d = await api(`/api/student/sessions/${sid}`);
       const s = d.session;
+      Lost.backdrop(d.theme);
       if (s.status === "live") { location.hash = `#/live/${sid}`; return "live"; }
       const unresolved = d.events.filter((e) => e.status !== "resolved");
       app.innerHTML = `
@@ -452,7 +453,7 @@
     if (!d.summary) return d.summaryState === "failed" ? `<p><span class="badge bad">Not available</span> The summary couldn't be written. Your professor can retry it. Your own moments are below.</p>` : `<p><span class="badge">Being written</span> This page updates by itself, and you'll get a notification.</p>`;
     if (d.summary.status === "transcript_only") return `${d.summary.empty ? `<p class="note">Nothing was transcribed in this class.</p>` : `<p class="note">No AI summary for this class (the AI was off). Here is the transcript.</p><details><summary>Transcript</summary><div class="excerpt">${(d.transcript || []).map((l) => `<p><time>${fmt(l.t)}</time>${esc(l.text)}</p>`).join("")}</div></details>`}`;
     const s = d.summary.shared;
-    return `<p class="note">Written by the AI from the lecture transcript and course materials. Tap a time or page next to a sentence to see its source.</p>${Lost.sharedSummary(s)}
+    return `<p class="note">Written by AI from today's lecture and notes. Sources are under More in each topic.</p>${Lost.sharedSummary(s)}
       ${d.summary.materials?.length ? `<h3>Course materials used</h3><ul>${[...new Map(d.summary.materials.map((m) => [m.title + "|" + (m.location === m.title ? "" : m.location), { ...m, location: m.location === m.title ? "" : m.location }])).values()].map((m) => `<li>${safeUrl(m.url) ? `<a href="${esc(m.url)}" target="_blank" rel="noopener">${esc(m.title)}</a>` : esc(m.title)}${m.location ? `, ${esc(m.location)}` : ""}</li>`).join("")}</ul>` : ""}
       ${d.summary.gaps?.length ? `<p class="note warn">Parts of class weren't recorded: ${d.summary.gaps.map((g) => `${fmt(g.from_t)}-${g.to_t == null ? "end" : fmt(g.to_t)}`).join(", ")}.</p>` : ""}`;
   }

@@ -51,7 +51,7 @@
     csrf = me.csrf; L.me = me.user;
     renderHeader(me);
     L.routes = routes;
-    window.addEventListener("hashchange", () => L.render());
+    window.addEventListener("hashchange", () => { L.clearBackdrop?.(); L.render(); });
     L.render();
     setInterval(refreshBell, 20000);
   };

@@ -26,7 +26,7 @@
   const figure = (v, body, { note = "" } = {}) => `<figure class="vis" data-vis="${esc(v.type)}">
       ${v.title || note ? `<figcaption>${v.title ? `<b>${esc(v.title)}</b>` : ""}${note ? ` <span class="v-note">${esc(note)}</span>` : ""}</figcaption>` : ""}
       ${body}
-      ${v.text ? `<details class="v-text"><summary>Picture as text</summary><p>${esc(v.text)}</p></details>` : ""}
+      ${v.text ? `<p class="visually-hidden">${esc(v.text)}</p>` : ""}
     </figure>`;
 
   // ---------- zones: a labeled surface (rink, field, strip) ----------
@@ -130,9 +130,7 @@
 
   // ---------- process: ordered steps, one highlighted at a time ----------
   function processV(v) {
-    const sid = id("steps");
-    return figure(v, `<ol class="v-steps" id="${sid}">${v.steps.map((s, i) => `<li${i === 0 ? ' class="on" aria-current="step"' : ""}><span class="v-stepn" aria-hidden="true">${i + 1}</span><span><b>${esc(s.label)}</b>${s.detail ? `<span class="v-stepd">${esc(s.detail)}</span>` : ""}</span></li>`).join("")}</ol>
-      <div class="v-ctl"><button type="button" data-act="step" data-dir="-1" data-for="${sid}" aria-label="Previous step">‹ Back</button><span class="v-ctl-pos" aria-live="polite">Step 1 of ${v.steps.length}</span><button type="button" data-act="step" data-dir="1" data-for="${sid}" aria-label="Next step">Next ›</button></div>`);
+    return figure(v, `<ol class="v-flow">${v.steps.map((s, i) => `<li><span class="v-stepn" aria-hidden="true">${i + 1}</span><span><b>${esc(s.label)}</b>${s.detail ? `<span class="v-stepd">${esc(s.detail)}</span>` : ""}</span></li>`).join("")}</ol>`);
   }
 
   function causeEffect(v) {
@@ -216,7 +214,7 @@
   }
 
   function analogy(v) {
-    return figure(v, `<p class="v-tag">Analogy</p><p class="v-analogy">${esc(v.analogy)}</p>
+    return figure(v, `<p class="v-analogy">${esc(v.analogy)}</p>
       <table class="v-pairs"><thead><tr><th scope="col">In class</th><th scope="col">In the analogy</th></tr></thead><tbody>${v.pairs.map((p) => `<tr><td>${esc(p.concept)}</td><td>${esc(p.analogy)}</td></tr>`).join("")}</tbody></table>
       ${v.breaks_down ? `<p class="v-breaks"><b>Where it breaks down:</b> ${esc(v.breaks_down)}</p>` : ""}`, { note: "An analogy, not the real thing" });
   }
@@ -235,15 +233,7 @@
     : `<span class="src-kind">${esc(s.source === "demo" ? "Course material (demo)" : "Course material")}</span> ${L.safeUrl(s.url) ? `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title)}</a>` : esc(s.title)}${s.location && s.location !== s.title ? `, ${esc(s.location)}` : ""}${s.text ? `<q class="src-text">${esc(s.text.slice(0, 260))}${s.text.length > 260 ? "…" : ""}</q>` : ""}`}
     ${(s.flags || []).map((f) => `<span class="src-flag">${esc(f)}</span>`).join("")}</li>`;
   // A claim: its text, compact source chips, any warning about those sources, and a hidden pop-out with the quotes.
-  let warned = new Set();
-  const claim = (c, cls = "") => {
-    if (!c?.text) return "";
-    const src = c.sources || [], pid = id("cite"), warn = src.find((s) => s.flags?.length);
-    const chips = []; for (const s of src) { const lab = chipLabel(s), have = chips.find((x) => x.lab === lab); if (have) have.warn ||= !!s.flags?.length; else chips.push({ lab, s, warn: !!s.flags?.length }); }
-    return `<div class="claim ${cls}"><p>${esc(c.text)}${chips.length ? ` <span class="cites">${chips.map(({ lab, s, warn }) => `<button type="button" class="cite${warn ? " cite-warn" : ""}" data-act="cite" data-for="${pid}" aria-expanded="false" aria-label="Source: ${s.type === "line" ? `lecture at ${fmt(s.t)}` : esc(s.title)}${warn ? ", may be unreliable" : ""}">${esc(lab)}</button>`).join("")}</span>` : ""}</p>
-      ${warn && !warned.has(warn.flags[0]) && warned.add(warn.flags[0]) ? `<p class="claim-warn">Check this: ${esc(warn.flags[0])} The sources marked ! have this problem.</p>` : ""}
-      ${src.length ? `<div class="cite-pop" id="${pid}" hidden><ul>${src.map(sourceItem).join("")}</ul></div>` : ""}</div>`;
-  };
+  const claim = (c, cls = "") => (c?.text ? `<div class="claim ${cls}"><p>${esc(c.text)}</p></div>` : "");
   L.claim = claim;
 
   // Turns an old (version 1) help card into the new shape so earlier classes still display.
@@ -252,52 +242,56 @@
     example: p.explanation?.example?.text ? { ...p.explanation.example, why: "" } : null, terms: p.explanation?.terms || [],
     connection: p.context?.text ? { text: p.context.text, sources: [] } : null, qualifications: [], provenance: [], enough: p.enough, clarify: p.clarify,
   });
-  const exampleOrigin = (ex) => ex.origin === "lecture" ? `Example from your professor${ex.source ? ` at ${fmt(ex.source.t)}` : ""}`
-    : ex.origin === "materials" ? `Example from course materials${ex.source?.title ? `: ${esc(ex.source.title)}${ex.source.location ? `, ${esc(ex.source.location)}` : ""}` : ""}` : "Example written by the AI";
+  const exampleLabel = (ex) => ex.origin === "lecture" ? `Your professor's example${ex.source ? ` (${fmt(ex.source.t)})` : ""}` : ex.origin === "materials" ? "From the course notes" : "Picture this";
 
-  // The lesson card: one idea, strongest first. Used for live help and for each summary topic.
-  L.lesson = (raw, { kicker = "", headingLevel = 3, showTitle = true, keepWarnings = false } = {}) => {
-    if (!keepWarnings) warned = new Set();
-    const p = upgrade(raw), h = `h${headingLevel}`, sub = `h${Math.min(6, headingLevel + 1)}`;
+  // The lesson card. Up front: the question, a hook, the idea in one line, a picture and an example.
+  // Everything else (why, terms, caveats, sources, warnings in full) waits behind "More".
+  L.lesson = (raw, { kicker = "", headingLevel = 3, showTitle = true } = {}) => {
+    const p = upgrade(raw), h = `h${headingLevel}`;
     const all = [p.takeaway, p.explanation, p.connection, ...(p.qualifications || []), ...(p.rule ? [p.rule.what_happened, p.rule.what_next, ...p.rule.when_differs] : [])].filter(Boolean).flatMap((c) => c.sources || []);
     const seen = new Set(), sources = all.filter((s) => (seen.has(s.id) ? false : seen.add(s.id)));
+    const shaky = sources.some((s) => s.flags?.length) || !!p.uncertainty || (p.provenance || []).length > 0;
+    const more = [
+      claim(p.explanation, "lesson-body"),
+      p.terms?.length ? `<dl class="lesson-terms">${p.terms.map((t) => `<div><dt>${esc(t.term)}</dt><dd>${esc(t.definition)}</dd></div>`).join("")}</dl>` : "",
+      p.qualifications?.length ? `<div class="lesson-quals"><p class="lesson-label">Keep in mind</p>${p.qualifications.map((c) => claim(c)).join("")}</div>` : "",
+      p.connection ? `<div class="lesson-connect"><p class="lesson-label">Where this fits today</p>${claim(p.connection)}</div>` : "",
+      p.uncertainty || (p.provenance || []).length ? `<div class="lesson-shaky">${[p.uncertainty, ...(p.provenance || [])].filter(Boolean).map((n) => `<p>${esc(n)}</p>`).join("")}</div>` : "",
+      sources.length ? `<div><p class="lesson-label">Where this came from</p><ul class="src-list">${sources.map(sourceItem).join("")}</ul></div>`
+        : `<p class="note">Nothing in the lecture or notes backed this up, so treat it as background.</p>`,
+    ].filter(Boolean).join("");
     return `<article class="lesson">
       ${kicker ? `<p class="lesson-kicker">${esc(kicker)}</p>` : ""}
       ${showTitle && p.title ? `<${h} class="lesson-title">${esc(p.title)}</${h}>` : ""}
-      ${!p.enough && p.clarify ? `<p class="clarify"><b>Lost needs a bit more:</b> ${esc(p.clarify)}</p>` : ""}
-      ${claim(p.takeaway, "lesson-takeaway")}
+      ${!p.enough && p.clarify ? `<p class="clarify">${esc(p.clarify)}</p>` : ""}
+      ${p.hook ? `<p class="lesson-hook">${esc(p.hook)}</p>` : ""}
+      ${claim(p.takeaway, p.hook ? "lesson-takeaway small" : "lesson-takeaway")}
       ${p.visual ? L.visual(p.visual) : ""}
-      ${p.rule ? `<figure class="rule-tree" aria-label="The rule as a branch: the condition, what usually happens next${p.rule.when_differs.length ? ", and the cases where it differs" : ""}">
-          <div class="rt-node rt-cond"><p class="rt-h">What happened?</p>${claim(p.rule.what_happened)}</div>
-          <div class="rt-branches">
-            <div class="rt-branch"><p class="rt-edge">Usually</p><div class="rt-node rt-out"><p class="rt-h">What happens next?</p>${claim(p.rule.what_next)}</div></div>
-            ${p.rule.when_differs.length ? `<div class="rt-branch rt-alt"><p class="rt-edge">But</p><div class="rt-node rt-exc"><p class="rt-h">When might the rule differ?</p>${p.rule.when_differs.map((c) => claim(c)).join("")}</div></div>` : ""}
-          </div></figure>` : ""}
-      ${claim(p.explanation, "lesson-body")}
-      ${p.terms?.length ? `<dl class="lesson-terms">${p.terms.map((t) => `<div><dt>${esc(t.term)}</dt><dd>${esc(t.definition)}</dd></div>`).join("")}</dl>` : ""}
-      ${p.example ? `<div class="lesson-example"><p class="lesson-label">${exampleOrigin(p.example)}</p><p>${esc(p.example.text)}</p>${p.example.why ? `<p class="why"><b>Why it works:</b> ${esc(p.example.why)}</p>` : ""}${p.example.sources?.length ? `<span class="cites">${p.example.sources.map((s) => `<span class="cite cite-static">${esc(chipLabel(s))}</span>`).join("")}</span>` : ""}</div>` : ""}
-      ${p.qualifications?.length ? `<div class="lesson-quals"><p class="lesson-label">Keep in mind</p>${p.qualifications.map((c) => claim(c)).join("")}</div>` : ""}
-      ${p.uncertainty ? `<p class="lesson-unsure"><span class="unsure-mark" aria-hidden="true">!</span> ${esc(p.uncertainty)}</p>` : ""}
-      ${(p.provenance || []).map((n) => `<p class="lesson-unsure"><span class="unsure-mark" aria-hidden="true">!</span> ${esc(n)}</p>`).join("")}
-      ${p.connection ? `<div class="lesson-connect"><p class="lesson-label">In today's class</p>${claim(p.connection)}</div>` : ""}
-      ${sources.length ? `<details class="lesson-deeper"><summary>All sources (${sources.length})</summary><ul class="src-list">${sources.map(sourceItem).join("")}</ul></details>`
-        : `<p class="note">No transcript line or course material backed this up, so treat it as general background.</p>`}
+      ${p.rule ? `<div class="rule-flow" role="group" aria-label="The rule">
+          <p class="rf-row"><span class="rf-k">If</span><span>${esc(p.rule.what_happened.text)}</span></p>
+          <p class="rf-row"><span class="rf-k">Then</span><span>${esc(p.rule.what_next.text)}</span></p>
+          ${p.rule.when_differs.map((c) => `<p class="rf-row rf-alt"><span class="rf-k">Unless</span><span>${esc(c.text)}</span></p>`).join("")}
+        </div>` : ""}
+      ${p.example ? `<div class="lesson-example"><p class="lesson-label">${exampleLabel(p.example)}</p><p>${esc(p.example.text)}</p></div>` : ""}
+      ${shaky ? `<p class="lesson-flag"><span class="unsure-mark" aria-hidden="true">!</span> Some of the audio was unclear here. Details under More.</p>` : ""}
+      ${more ? `<details class="lesson-more"><summary>More</summary><div class="lesson-more-body">${more}</div></details>` : ""}
     </article>`;
   };
 
   // The after-class summary (version 2): overview, concept map, then topics to open one at a time.
   L.summaryV2 = (s, { headingLevel = 3 } = {}) => {
-    const h = `h${headingLevel}`; warned = new Set();
+    const h = `h${headingLevel}`;
     return `<div class="sum2">
       ${s.overview ? claim(s.overview, "sum-overview") : ""}
       ${s.map ? L.visual({ ...s.map, title: "How today's ideas connect" }) : ""}
-      ${s.uncertain?.length ? `<div class="sum-unsure"><p class="lesson-label">What the recording leaves unclear</p>${s.uncertain.map((c) => claim(c)).join("")}</div>` : ""}
+      
       <${h} class="sum-topics-h">Topics</${h}>
       ${s.topics.map((t, i) => `<details class="sum-topic"${i === 0 ? " open" : ""}><summary><span class="sum-t">${esc(t.title)}</span><span class="sum-k">${esc(t.key_idea?.text || "")}</span></summary>
-        ${L.lesson({ v: 2, title: t.title, takeaway: t.key_idea, explanation: t.explanation, visual: t.visual, example: t.example, qualifications: t.qualifications, enough: true }, { showTitle: false, headingLevel: headingLevel + 1, keepWarnings: true })}
+        ${L.lesson({ v: 2, title: t.title, takeaway: t.key_idea, explanation: t.explanation, visual: t.visual, example: t.example, qualifications: t.qualifications, enough: true }, { showTitle: false, headingLevel: headingLevel + 1 })}
       </details>`).join("")}
       ${s.concepts?.length ? `<details class="sum-terms"><summary>Terms (${s.concepts.length})</summary><dl class="lesson-terms">${s.concepts.map((c) => `<div><dt>${esc(c.term)}</dt><dd>${esc(c.definition)}</dd></div>`).join("")}</dl></details>` : ""}
-      ${s.deadlines?.length ? `<div class="sum-deadlines"><p class="lesson-label">Deadlines mentioned</p>${s.deadlines.map((d) => claim(d)).join("")}</div>` : ""}
+      ${s.uncertain?.length ? `<details class="sum-terms"><summary>Unclear in the recording (${s.uncertain.length})</summary>${s.uncertain.map((c) => claim(c)).join("")}</details>` : ""}
+      ${s.deadlines?.length ? `<div class="sum-deadlines"><p class="lesson-label">Due dates</p>${s.deadlines.map((d) => claim(d)).join("")}</div>` : ""}
     </div>`;
   };
 
