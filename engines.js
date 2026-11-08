@@ -85,7 +85,9 @@ function startLocal(kind) {
 }
 
 // ---------- Deepgram (live WebSocket) ----------
-const dg = { ws: null, queue: [], keepAlive: null, streamStart: 0, pending: [], closing: false };
+const dg = { ws: null, queue: [], keepAlive: null, streamStart: 0, pending: [], closing: false, finalizedAt: 0 };
+// A transcript line never holds more than about this many seconds of speech, even if the professor doesn't pause.
+const LINE_MAX_S = Number(process.env.LOST_LINE_MAX_S) || 5;
 
 function dgConnect() {
   const params = new URLSearchParams({
@@ -110,9 +112,19 @@ function dgConnect() {
     let msg; try { msg = JSON.parse(e.data); } catch { return; }
     if (msg.type === "Results") {
       const alt = msg.channel?.alternatives?.[0]; if (!alt) return;
-      if (!msg.is_final) { onPartial([...dg.pending.map((p) => p.text), alt.transcript].join(" ").trim()); return; }
+      const lineStart = dg.pending[0]?.start ?? msg.start;
+      const spoken = msg.start + (msg.duration || 0) - lineStart; // seconds of speech in the line so far
+      if (!msg.is_final) {
+        onPartial([...dg.pending.map((p) => p.text), alt.transcript].join(" ").trim());
+        // Don't wait for the professor to pause: after about 5 seconds of talking, ask Deepgram to
+        // finalize what it has so the line appears now instead of at the end of a long sentence.
+        if (alt.transcript && spoken >= LINE_MAX_S && Date.now() - dg.finalizedAt > 1500 && e.target.readyState === 1) {
+          dg.finalizedAt = Date.now(); e.target.send(JSON.stringify({ type: "Finalize" }));
+        }
+        return;
+      }
       if (alt.transcript) dg.pending.push({ text: alt.transcript, start: msg.start, words: alt.words || [] });
-      if (msg.speech_final) dgFlush();
+      if (msg.speech_final || msg.from_finalize || spoken >= LINE_MAX_S) dgFlush();
       else onPartial(dg.pending.map((p) => p.text).join(" "));
     } else if (msg.type === "UtteranceEnd") dgFlush();
   };

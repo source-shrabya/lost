@@ -176,6 +176,7 @@ main { max-width: 1120px; margin: 0 auto; padding: 24px 24px 96px; }
 .transcript input.fix { display: inline; width: calc(100% - 60px); font-size: 18px; min-height: 36px; padding: 4px 8px; }
 .lostmark { display: inline-block; margin-left: 6px; font-size: 13px; font-weight: 600; background: var(--gold); color: var(--gold-ink); border-radius: 99px; padding: 1px 9px; vertical-align: 2px; }
 .unsure { text-decoration: underline dotted var(--warn); text-underline-offset: 3px; }
+.tlines .saying { color: var(--soft); font-style: italic; }
 .interim { color: var(--soft); min-height: 1.5em; font-size: 18px; }
 #typeForm input { flex: 1 1 240px; width: auto; }
 svg.strip { width: 100%; height: 90px; display: block; }
@@ -280,6 +281,7 @@ svg .dot-students { fill: var(--ink); }
 .part { font-size: 14px; font-weight: 700; color: var(--soft); text-transform: none; margin: 12px 0 4px; display: flex; gap: 8px; align-items: center; }
 .part span { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; background: var(--ink); color: var(--paper); font-size: 13px; }
 .again { font-size: 17px; }
+.explain-main { font-size: 19px; line-height: 1.45; margin: 4px 0 10px; font-weight: 500; }
 .example { background: var(--paper); border-radius: var(--r); padding: 10px 12px; margin: 8px 0; }
 .example p { margin: 4px 0 0; }
 .origin { display: inline-block; font-size: 13px; font-weight: 700; color: var(--soft); }

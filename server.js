@@ -535,6 +535,7 @@ route("GET", "/api/student/sessions/:id/live", (ctx) => {
   const c = one("SELECT name, code FROM courses WHERE id = ?", s.course_id);
   return {
     status: s.status, title: s.title, course: c, clock: live.sessionClock(s), rev: r.editRev, full: from === 0,
+    now: wantLines && s.status === "live" ? r.interim.slice(-300) : "",
     lines: wantLines ? all("SELECT idx, t, text FROM transcript_lines WHERE session_id = ? AND idx >= ? ORDER BY idx", s.id, Math.max(from, (one("SELECT MAX(idx) m FROM transcript_lines WHERE session_id = ?", s.id).m ?? 0) - 150)) : null,
     lastIdx: one("SELECT MAX(idx) m FROM transcript_lines WHERE session_id = ?", s.id).m,
     gaps: all("SELECT from_t, to_t FROM transcript_gaps WHERE session_id = ? ORDER BY from_t", s.id),

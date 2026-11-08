@@ -120,7 +120,7 @@
 
   // ================= live class =================
   async function liveClass(app, [sid]) {
-    const st = { status: "", lines: [], since: 0, rev: -1, transcriptOpen: false, ai: true, clock: 0, lastIdx: null, gaps: [] };
+    const st = { status: "", now: "", lines: [], since: 0, rev: -1, transcriptOpen: false, ai: true, clock: 0, lastIdx: null, gaps: [] };
     const H = { ev: null, phrases: [], picked: null, cards: [], busy: false, catchups: 0, retries: 0, seq: 0 };
     app.innerHTML = `
       <div class="room">
@@ -235,16 +235,14 @@
       return `<div class="card-block" data-i="${i}">
         ${label ? `<h3 class="again">${label}</h3>` : ""}
         ${!p.enough && p.clarify ? `<p class="clarify"><b>Lost needs a bit more:</b> ${esc(p.clarify)}</p>` : ""}
-        <h3 class="part"><span aria-hidden="true">A</span> Explanation</h3>
-        <p>${esc(p.explanation.text)}</p>
-        <div class="example"><span class="origin">${Lost.origin(p.explanation.example)}</span><p>${esc(p.explanation.example.text)}</p></div>
-        <h3 class="part"><span aria-hidden="true">B</span> Context</h3>
-        <p>${esc(p.context.text)}</p>
-        <h3 class="part"><span aria-hidden="true">C</span> Flow of the discussion</h3>
-        ${Lost.flow(p.flow, { caption: false })}
-        ${p.explanation.terms.length || p.context.sources.length ? `<details class="part-more"><summary>Definitions and sources</summary>
+        <p class="explain-main">${esc(p.explanation.text)}</p>
+        ${p.explanation.example?.text ? `<div class="example"><span class="origin">${Lost.origin(p.explanation.example)}</span><p>${esc(p.explanation.example.text)}</p></div>` : ""}
+        <details class="part-more"><summary>More: where this fits and sources</summary>
+          ${p.context.text ? `<p>${esc(p.context.text)}</p>` : ""}
+          ${Lost.flow(p.flow, { caption: false })}
           ${p.explanation.terms.length ? `<dl class="terms">${p.explanation.terms.map((t) => `<dt>${esc(t.term)}</dt><dd>${esc(t.definition)}</dd>`).join("")}</dl>` : ""}
-          ${Lost.sources(p.context.sources)}</details>` : `<p class="note">No transcript line or course material backed this up, so treat it as general background.</p>`}
+          ${p.context.sources.length ? Lost.sources(p.context.sources) : `<p class="note">No transcript line or course material backed this up, so treat it as general background.</p>`}
+        </details>
         ${p.diagnostic ? diagHtml(p.diagnostic) : ""}
       </div>`;
     }
@@ -333,7 +331,8 @@
     function paintLines() {
       const box = $("#tlines");
       const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 50;
-      box.innerHTML = st.lines.filter(Boolean).slice(-150).map((l) => `<p><time>${fmt(l.t)}</time>${esc(l.text)}</p>`).join("") || `<p class="note">Nothing yet. Words show up as your professor talks.</p>`;
+      const lines = st.lines.filter(Boolean).slice(-150).map((l) => `<p><time>${fmt(l.t)}</time>${esc(l.text)}</p>`).join("");
+      box.innerHTML = (lines + (st.now ? `<p class="saying"><time>now</time>${esc(st.now)}</p>` : "")) || `<p class="note">Nothing yet. Words show up as your professor talks.</p>`;
       if (atBottom) box.scrollTop = box.scrollHeight;
     }
 
@@ -350,7 +349,7 @@
         else if (d.status === "live" && !$("#ack").textContent) $("#ack").textContent = "Nobody sees who tapped.";
       }
       st.clock = d.clock; st.lastIdx = d.lastIdx; st.ai = d.ai;
-      if (d.lines) { if (d.full) st.lines = []; for (const l of d.lines) st.lines[l.idx] = l; st.since = st.lines.length; st.rev = d.rev; if (d.lines.length || d.full) paintLines(); }
+      if (d.lines) { if (d.full) st.lines = []; for (const l of d.lines) st.lines[l.idx] = l; st.since = st.lines.length; st.rev = d.rev; const nowChanged = (d.now || "") !== st.now; st.now = d.now || ""; if (d.lines.length || d.full || nowChanged) paintLines(); }
       paintSince();
       handleAudio(d);
     });
