@@ -270,7 +270,33 @@
 
   // The lesson card. Up front: the question (as the panel title), a hook, the idea in one line, one
   // picture, an example, and where it fits in class. "Explain more" holds the rest; "Sources" opens on demand.
-  L.lesson = (raw, { kicker = "", headingLevel = 3, showTitle = true } = {}) => {
+  // ---------- AI illustration: drawn only when the student asks, then kept for this page ----------
+  const illos = new Map(); // help id -> { url, caption, alt }
+  const illoFigure = (d) => `<figure class="illo-fig"><img src="${esc(d.url)}" alt="${esc(d.alt)}" width="512" height="512" decoding="async">
+      <figcaption><span class="illo-tag">AI illustration</span> ${esc(d.caption)}</figcaption></figure>`;
+  function illustration(p, helpId) {
+    if (!p.illustration || !helpId || !L.illustrations) return "";
+    const done = illos.get(helpId);
+    return `<div class="illo" data-illo-box="${esc(helpId)}">${done ? illoFigure(done)
+      : `<button type="button" class="illo-btn" data-illo="${esc(helpId)}">Show illustration</button>`}</div>`;
+  }
+  document.addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-illo]"); if (!b || b.disabled) return;
+    const id = b.dataset.illo, box = b.closest(".illo");
+    b.disabled = true; b.textContent = "Drawing…"; box.querySelector(".illo-err")?.remove();
+    b.insertAdjacentHTML("afterend", `<div class="illo-skel" aria-hidden="true"></div>`);
+    try {
+      const d = await L.api(`/api/help/${encodeURIComponent(id)}/illustration`, { method: "POST", body: {} });
+      illos.set(id, d);
+      box.innerHTML = illoFigure(d);
+    } catch (err) {
+      box.querySelector(".illo-skel")?.remove();
+      b.disabled = false; b.textContent = "Try the illustration again";
+      box.insertAdjacentHTML("beforeend", `<p class="illo-err" role="status">${esc(err.message || "No illustration this time.")}</p>`);
+    }
+  });
+
+  L.lesson = (raw, { kicker = "", headingLevel = 3, showTitle = true, helpId = "" } = {}) => {
     const p = upgrade(raw), h = `h${headingLevel}`;
     const all = [p.takeaway, p.explanation, p.connection, ...(p.qualifications || []), ...(p.rule ? [p.rule.what_happened, p.rule.what_next, ...p.rule.when_differs] : [])].filter(Boolean).flatMap((c) => c.sources || []);
     const seen = new Set(), sources = all.filter((s) => (seen.has(s.id) ? false : seen.add(s.id)));
@@ -295,6 +321,7 @@
           ${p.rule.when_differs.map((c) => `<p class="rf-row rf-alt"><span class="rf-k">Unless</span><span>${esc(c.text)}</span></p>`).join("")}
         </div>` : ""}
       ${p.example ? `<div class="lesson-example"><p class="lesson-label">${exampleLabel(p.example)}</p><p>${esc(p.example.text)}</p></div>` : ""}
+      ${illustration(p, helpId)}
       ${p.connection?.text ? `<p class="lesson-connect-line"><span class="lesson-label">In class</span> ${esc(p.connection.text)}</p>` : ""}
       <div class="lesson-foot">
         ${more ? `<details class="lesson-more"><summary>Explain more</summary><div class="lesson-more-body">${more}</div></details>` : ""}

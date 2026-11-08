@@ -121,7 +121,7 @@
           <div class="live-tools">
             <button id="momentsBtn" class="tool" aria-haspopup="dialog" aria-label="My moments"><span class="mlabel">My moments</span> <span id="momentsN" class="count" hidden></span></button>
             <button id="listen" class="tool" disabled>Listen</button>
-            <button id="skeys" class="tool" aria-haspopup="dialog" title="Keyboard shortcuts (?)"><kbd>?</kbd><span class="visually-hidden">Keyboard shortcuts</span></button>
+            <button id="skeys" class="tool" aria-haspopup="dialog" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">?</button>
           </div>
         </header>
         <section class="tcol" aria-labelledby="tH">
@@ -129,8 +129,8 @@
           <div id="tlines" class="tlines2" tabindex="0" aria-label="Live transcript. Tap a line that lost you."></div>
           <button id="jump" class="jump" hidden>New lines below · Jump to live</button>
           <div class="lostbar">
-            <button class="lostbtn2" id="lost" disabled aria-describedby="ack"><span class="lost-main">I'm lost</span><span class="lost-sub">Anonymous. Class keeps going.</span></button>
-            <p id="ack" class="ack" aria-live="polite"></p>
+            <button class="lostbtn2" id="lost" disabled aria-describedby="ack"><span class="lost-main">I'm lost</span></button>
+            <p id="ack" class="ack" aria-live="polite">Anonymous. Class keeps going.</p>
           </div>
         </section>
         <aside class="hcol" id="hcol" aria-labelledby="helpH" hidden>
@@ -178,6 +178,11 @@
     // ---------- transcript: append only, never steal the scroll ----------
     const nearBottom = () => box.scrollHeight - box.scrollTop - box.clientHeight < 60;
     const lineHtml = (l) => `<p class="tline${H.ev && (H.picked?.idx === l.idx) ? " picked" : ""}" data-idx="${l.idx}"><time>${fmt(l.t)}</time><span>${esc(l.text)}</span></p>`;
+    // A time that repeats the line above it says nothing new; keep it for screen readers only.
+    function markRepeatTimes() {
+      let prev = "";
+      box.querySelectorAll(".tline time").forEach((t) => { const v = t.textContent; t.classList.toggle("same", v === prev && v !== "now"); prev = v; });
+    }
     function paintLines(full) {
       const stick = nearBottom();
       const lines = st.lines.filter(Boolean);
@@ -188,6 +193,7 @@
       $("#emptyT")?.remove();
       if (fresh.length) { box.insertAdjacentHTML("beforeend", fresh.map(lineHtml).join("")); st.rendered = Math.max(...lines.map((l) => l.idx)) + 1; }
       if (st.now) box.insertAdjacentHTML("beforeend", `<p class="tline saying" id="saying"><time>now</time><span>${esc(st.now)}</span></p>`);
+      markRepeatTimes();
       if (stick || full) { box.scrollTop = box.scrollHeight; st.unseen = 0; }
       else if (fresh.length) st.unseen += fresh.length;
       $("#jump").hidden = !st.unseen;
@@ -273,9 +279,11 @@
       $("#help").innerHTML = `${H.cards.map((c, i) => cardHtml(c, i)).join("")}
         <div class="help-actions" id="helpActions">
           <button class="primary" data-h="helped">Got it</button>
-          <button data-h="still">Still confused</button>
-          ${st.ai ? `<button data-h="retry">Explain differently</button>` : ""}
-          <button data-h="catchup">Catch me up</button>
+          <div class="more-help" role="group" aria-label="More help">
+            <button data-h="still">Still confused</button>
+            ${st.ai ? `<button data-h="retry">Another way</button>` : ""}
+            <button data-h="catchup">Catch me up</button>
+          </div>
         </div>
         <div id="catchupBox" aria-live="polite"></div>
         <p class="note since" id="sinceTap"></p>
@@ -294,7 +302,7 @@
           ${p.excerpt?.length ? `<details class="excerpt-d"><summary>What was transcribed (may contain errors)</summary><div class="excerpt">${p.excerpt.map((l) => `<p class="${l.mine ? "mine" : ""}"><time>${fmt(l.t)}</time>${esc(l.text)}</p>`).join("")}</div></details>` : ""}
           ${p.gaps?.length ? `<p class="note warn">Some audio near your tap is missing from the transcript.</p>` : ""}</div>`;
       }
-      return `<div class="card-block" data-i="${i}">${Lost.lesson(p, { kicker: label, showTitle: i > 0, headingLevel: 3 })}
+      return `<div class="card-block" data-i="${i}">${Lost.lesson(p, { kicker: label, showTitle: i > 0, headingLevel: 3, helpId: c.id })}
         ${p.visualIssue ? `<p class="note vis-fail">The picture for this one didn't pass Lost's checks, so it's left out. <button class="linkish" data-h="retry">Try another explanation</button></p>` : ""}
         ${p.diagnostic ? `<details class="diag-d"><summary>Quick check: is it the idea underneath?</summary>${diagHtml(p.diagnostic)}</details>` : ""}</div>`;
     }
@@ -382,7 +390,7 @@
     function paintSince() {
       const el = $("#sinceTap"); if (!el || !H.ev) return;
       const n = st.lastIdx == null ? 0 : st.lastIdx - (H.ev.line_idx ?? -1);
-      el.textContent = st.status === "live" ? `Class is at ${fmt(st.clock)}${n > 0 ? ` · ${n} new line${n === 1 ? "" : "s"} since your tap` : ""}` : st.status === "ended" ? "Class has ended. This moment is in your review." : "";
+      el.textContent = st.status === "live" ? (n > 0 ? `${n} new line${n === 1 ? "" : "s"} since your tap` : "") : st.status === "ended" ? "Class has ended. This moment is in your review." : "";
     }
 
     // ---------- My moments (this class) ----------
@@ -431,8 +439,10 @@
       }
       st.clock = d.clock; st.lastIdx = d.lastIdx; st.ai = d.ai; st.mine = d.mine || [];
       $("#clock").textContent = d.status === "live" ? fmt(d.clock) : "";
-      $("#momentsN").textContent = st.mine.length; $("#momentsN").hidden = !st.mine.length;
-      Lost.backdrop(d.theme);
+      const mN = $("#momentsN"), grew = st.mine.length > Number(mN.textContent || 0);
+      mN.textContent = st.mine.length; mN.hidden = !st.mine.length;
+      if (grew) { mN.classList.remove("bump"); void mN.offsetWidth; mN.classList.add("bump"); }
+      Lost.clearBackdrop?.(); // the live class stays plain so the transcript has the student's full attention
       if (d.lines) {
         const full = d.full && st.rev !== -1 && d.rev !== st.rev; // the professor fixed a line: redraw, keep position
         const keep = box.scrollTop;

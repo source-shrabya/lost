@@ -48,7 +48,7 @@
     const me = await fetch("/api/me", { cache: "no-store" }).then((r) => r.json()).catch(() => ({}));
     if (!me.user) { location.href = `/login?next=${encodeURIComponent(location.pathname + location.hash)}`; return; }
     if (me.user.role !== role) { location.href = me.user.role === "professor" ? "/prof" : "/student"; return; }
-    csrf = me.csrf; L.me = me.user;
+    csrf = me.csrf; L.me = me.user; L.illustrations = !!me.illustrations;
     renderHeader(me);
     L.routes = routes;
     window.addEventListener("hashchange", () => { L.clearBackdrop?.(); L.render(); });
@@ -61,7 +61,7 @@
     $("#top").innerHTML = `
       <a class="skip" href="#app">Skip to content</a>
       <a class="brand" href="#/" aria-label="Lost home">Lost</a>
-      <span class="role-tag">${u.role === "professor" ? "Professor" : "Student"}${u.demo ? " · demo account" : ""}</span>
+      ${u.demo ? `<span class="role-tag">demo account</span>` : ""}
       <nav aria-label="Account" class="top-actions">
         <details class="bell" id="bell"><summary aria-label="Notifications"><span>Notifications</span> <b id="bellCount" class="count" ${me.unread ? "" : "hidden"}>${me.unread}</b></summary><div class="bell-list" id="bellList"><p class="note">Loading…</p></div></details>
         <span class="who">${esc(u.name)}</span>

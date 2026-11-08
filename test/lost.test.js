@@ -51,6 +51,7 @@ function fakeAi({ prompt, label }) {
         qualifications: [], uncertainty: "", connection: claim("It builds on single parity.", [`L${lines[0]}`]),
         visual: aiMode === "badvisual" ? wire("decision", { items: [{ id: "a", label: "Flip?", kind: "outcome" }, { id: "b", label: "x", kind: "outcome" }], links: [{ from: "a", to: "b", label: "" }] })
           : wire("bit_grid", { rows: ["1010", "1100", "0111"], settings: { flip_row: 1, flip_col: 2 } }),
+        illustration: { prompt: "A student flipping one light switch in a wall of switches", caption: "One flipped switch stands out in its row and column.", alt: "A wall of light switches with one flipped the other way." },
         diagnostic: label === "help:explain" ? { question: "What does one parity bit catch?", choices: ["one flipped bit", "two flipped bits", "nothing"], correct_index: 0, prerequisite: "single parity" } : null,
       };
     }
@@ -699,4 +700,104 @@ test("course art: professors pick from fixed sets; anything else is ignored", as
   assert.equal((await courseByCode(rivera, "CSC 311")).art, "sports");
   await rivera.post(`/api/prof/courses/${c.id}/settings`, { art: "<script>" });
   assert.equal((await courseByCode(rivera, "CSC 311")).art, "computing", "unknown values fall back to the guess");
+});
+
+test("AI illustrations: on request only, prompt stays on the server, access checked, one call per card, failures keep the card", async () => {
+  const img = await import("../lib/illustrate.js");
+  process.env.IMAGE_USER_BURST = "1000";
+  ai.setFakeProvider(fakeAi); aiMode = "ok";
+  const rivera = await as("prof"), jordan = await as("jordan"), riley = await as("riley");
+  const { sid } = await liveSession(rivera);
+  await say(rivera, sid, "Two dimensional parity puts a parity bit on every row and every column.");
+  const ev = (await jordan.post(`/api/student/sessions/${sid}/lost`)).data.event;
+  const card = (await jordan.post(`/api/student/events/${ev.id}/help`, { kind: "explain" })).data;
+  assert.deepEqual(card.payload.illustration, { caption: "One flipped switch stands out in its row and column.", alt: "A wall of light switches with one flipped the other way." });
+  assert.ok(!JSON.stringify(card).includes("light switch in a wall"), "image prompt must not reach the browser");
+  assert.equal(card.payload.illustrationSpec, undefined);
+  const url = `/api/help/${card.id}/illustration`;
+
+  // Off by default, and the card is unaffected.
+  for (const k of ["IMAGE_GENERATION_ENABLED", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"]) delete process.env[k];
+  assert.equal((await jordan.get("/api/me")).data.illustrations, false);
+  let r = await jordan.post(url);
+  assert.equal(r.status, 503); assert.match(r.data.error, /turned off/);
+  process.env.IMAGE_GENERATION_ENABLED = "true";
+  r = await jordan.post(url);
+  assert.equal(r.status, 503); assert.match(r.data.error, /set up/);
+
+  // Mocked Cloudflare.
+  Object.assign(process.env, { CLOUDFLARE_ACCOUNT_ID: "acct-test", CLOUDFLARE_API_TOKEN: "tok-secret-test", IMAGE_USER_BURST: "1000" });
+  const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(200, 7)]);
+  const calls = [];
+  let reply = () => ({ status: 200, body: { result: { image: jpeg.toString("base64") }, success: true, errors: [], messages: [] } });
+  img.setFetchForTests(async (u, opts) => {
+    calls.push({ u, opts });
+    await new Promise((ok, no) => { const t = setTimeout(ok, 30); opts.signal.addEventListener("abort", () => { clearTimeout(t); no(Object.assign(new Error("aborted"), { name: "AbortError" })); }); });
+    const x = reply();
+    if (x.wait) await new Promise((ok, no) => opts.signal.addEventListener("abort", () => no(Object.assign(new Error("aborted"), { name: "AbortError" }))));
+    return new Response(JSON.stringify(x.body), { status: x.status });
+  });
+  assert.equal((await jordan.get("/api/me")).data.illustrations, true);
+  // Another student and a signed-out visitor can't get it.
+  assert.equal((await riley.post(url)).status, 404);
+  assert.equal((await fetch(`${base}${url}.img`)).status, 401);
+  // Two taps at once: one Cloudflare call.
+  const [a1, a2] = await Promise.all([jordan.post(url), jordan.post(url)]);
+  assert.equal(a1.status, 200, JSON.stringify(a1.data)); assert.equal(a2.status, 200);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].u, "https://api.cloudflare.com/client/v4/accounts/acct-test/ai/run/@cf/black-forest-labs/flux-1-schnell");
+  assert.equal(calls[0].opts.headers.authorization, "Bearer tok-secret-test");
+  const sent = JSON.parse(calls[0].opts.body);
+  assert.deepEqual(Object.keys(sent).sort(), ["prompt", "steps"]); assert.equal(sent.steps, 4);
+  assert.match(sent.prompt, /light switch/); assert.match(sent.prompt, /No text/);
+  assert.equal(a1.data.caption, "One flipped switch stands out in its row and column.");
+  assert.ok(!JSON.stringify(a1.data).includes("tok-secret") && !JSON.stringify(a1.data).includes("acct-test"));
+  // The image, for the student and the course's professor; cached afterwards.
+  const got = await fetch(`${base}${a1.data.url}`, { headers: { cookie: jordan.cookie } });
+  assert.equal(got.status, 200); assert.equal(got.headers.get("content-type"), "image/jpeg");
+  assert.deepEqual(Buffer.from(await got.arrayBuffer()), jpeg);
+  assert.equal((await fetch(`${base}${a1.data.url}`, { headers: { cookie: rivera.cookie } })).status, 200);
+  assert.equal((await fetch(`${base}${a1.data.url}`, { headers: { cookie: riley.cookie } })).status, 404);
+  assert.equal((await jordan.post(url)).status, 200); assert.equal(calls.length, 1);
+
+  // Failures: each one leaves the card in place.
+  const fresh = async (kind) => (await jordan.post(`/api/student/events/${ev.id}/help`, { kind })).data;
+  const cases = [
+    [() => ({ status: 401, body: { success: false, errors: [{ code: 10000, message: "Authentication error" }] } }), 502, /credentials/],
+    [() => ({ status: 429, body: { success: false, errors: [{ code: 3036, message: "Account limited: daily free allocation of 10,000 neurons exceeded" }] } }), 429, /allowance/],
+    [() => ({ status: 200, body: { result: { image: Buffer.from("not an image").toString("base64") }, success: true } }), 502, /isn't an image/],
+    [() => ({ status: 200, body: { result: { image: "<script>" }, success: true } }), 502, /isn't an image/],
+    [() => ({ status: 200, wait: true, body: {} }), 504, /too long/],
+  ];
+  process.env.IMAGE_TIMEOUT_MS = "80";
+  const kinds = ["retry", "steps", "simpler", "retry", "steps"];
+  for (const [i, [fn, code, msg]] of cases.entries()) {
+    const c = i < 3 ? await fresh(kinds[i]) : card; // later cases reuse a card whose image isn't cached
+    const target = i < 3 ? c.id : (await fresh(kinds[i])).id;
+    reply = fn;
+    const res = await jordan.post(`/api/help/${target}/illustration`);
+    assert.equal(res.status, code, `case ${i}: ${JSON.stringify(res.data)}`); assert.match(res.data.error, msg);
+    const still = (await jordan.get(`/api/student/events/${ev.id}`)).data.cards.find((x) => x.id === target);
+    assert.equal(still.status, "ok"); assert.ok(still.payload.takeaway);
+  }
+  delete process.env.IMAGE_TIMEOUT_MS;
+
+  // Per-student limit and the daily cap.
+  reply = () => ({ status: 200, body: { result: { image: jpeg.toString("base64") }, success: true } });
+  const failedId = () => db.one("SELECT help_id FROM illustrations WHERE status = 'failed' LIMIT 1").help_id;
+  process.env.IMAGE_DAILY_MAX = "1"; // one image already drawn today
+  const capped = await jordan.post(`/api/help/${failedId()}/illustration`);
+  assert.equal(capped.status, 429); assert.match(capped.data.error, /today/);
+  delete process.env.IMAGE_DAILY_MAX;
+  process.env.IMAGE_USER_BURST = "1";
+  await new Promise((ok) => setTimeout(ok, 50));
+  const lim1 = await jordan.post(`/api/help/${failedId()}/illustration`);
+  const lim2 = await jordan.post(`/api/help/${failedId()}/illustration`);
+  assert.equal(lim1.status, 200); assert.equal(lim2.status, 429); assert.match(lim2.data.error, /Wait a little/);
+  assert.equal(calls.length, 7); // 1 drawn + 5 failure cases + 1 after the cap; the limited request never reached Cloudflare
+
+  for (const k of ["IMAGE_GENERATION_ENABLED", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN", "IMAGE_USER_BURST", "IMAGE_DAILY_MAX"]) delete process.env[k];
+  img.setFetchForTests(null);
+  await rivera.post(`/api/prof/sessions/${sid}/end`);
+  ai.setFakeProvider(null);
 });

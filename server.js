@@ -22,6 +22,7 @@ const jobs = await import("./lib/jobs.js");
 const summary = await import("./lib/summary.js");
 const help = await import("./lib/help.js");
 const live = await import("./lib/live.js");
+const img = await import("./lib/illustrate.js");
 const { sessionTheme, courseArt, ART_IDS, ART } = await import("./lib/theme.js");
 const { startEngine, engine } = await import("./engines.js");
 const { seedDemo, DEMO_USERS, DEMO_PASSWORD } = await import("./lib/seed.js");
@@ -39,6 +40,7 @@ export async function boot({ dbFile = process.env.LOST_DB || path.join(DATA, "lo
   canvas.seedInstitutions();
   mat.initMaterials(here);
   initAi();
+  img.initIllustrations(DATA);
   if (engines) startEngine({ here, termsFile: path.join(DATA, "terms.txt"), onPartial: live.onEnginePartial, onLine: live.onEngineLine });
   if (seed) await seedDemo();
   live.recoverSessions();
@@ -146,6 +148,7 @@ route("GET", "/api/me", (ctx) => {
   if (!ctx.session) return { user: null, demo: DEMO, demoUsers: DEMO ? DEMO_USERS.map(({ key, name, role, note, email }) => ({ key, name, role, note, email })) : [], demoPassword: DEMO ? DEMO_PASSWORD : null, profSignup: !!PROF_SIGNUP_CODE };
   const u = ctx.session.user;
   return { user: { id: u.id, name: u.name, email: u.email, role: u.role, demo: !!u.demo, onboarded: !!u.onboarded }, csrf: ctx.session.csrf,
+    illustrations: img.status() === "on",
     unread: one("SELECT COUNT(*) n FROM notifications WHERE user_id = ? AND read_at IS NULL", u.id).n };
 }, { open: true });
 
@@ -645,6 +648,39 @@ route("POST", "/api/student/events/:id/status", (ctx, b) => {
   run("UPDATE confusion_events SET self_status = ?, resolved_at = ? WHERE id = ?", st, st === "resolved" ? now() : null, ev.id);
   return { ok: true, previous: ev.self_status, status: st };
 });
+// ---------- AI illustrations (on request, one per card, cached) ----------
+// Allowed: the student who asked for the card, or the professor who owns its course.
+function illustrationFor(u, helpId) {
+  if (!/^[A-Za-z0-9_-]{6,20}$/.test(helpId)) fail(404, "Not found.");
+  const r = one(`SELECT h.id, e.student_id, c.owner_id FROM help_responses h
+    JOIN confusion_events e ON e.id = h.event_id JOIN lecture_sessions s ON s.id = e.session_id JOIN courses c ON c.id = s.course_id
+    WHERE h.id = ?`, helpId);
+  if (!r || (r.student_id !== u.id && r.owner_id !== u.id)) fail(404, "Not found.");
+  return r;
+}
+route("POST", "/api/help/:id/illustration", async (ctx) => {
+  const u = needUser(ctx);
+  const r = illustrationFor(u, ctx.params.id);
+  const why = img.unavailable();
+  if (why) fail(503, img.message(why));
+  const ready = one("SELECT status FROM illustrations WHERE help_id = ?", r.id)?.status === "ok";
+  if (!ready && !allowed(`img:${u.id}`, 1 / 20, Number(process.env.IMAGE_USER_BURST) || 4)) fail(429, "That's a lot of pictures. Wait a little before the next one.");
+  try {
+    const out = await img.illustrate(r.id, u.id);
+    return { url: `/api/help/${r.id}/illustration.img`, caption: out.caption, alt: out.alt };
+  } catch (e) {
+    if (e instanceof img.ImageError) {
+      if (e.code !== "none" && e.code !== "off") console.warn(`[illustration] ${r.id} ${e.code}`); // code only, never secrets
+      fail(e.status, e.message);
+    }
+    throw e;
+  }
+});
+route("GET", "/api/help/:id/illustration.img", (ctx) => {
+  const u = needUser(ctx);
+  const r = illustrationFor(u, ctx.params.id);
+  return img.readImage(r.id) || fail(404, "Not drawn yet.");
+});
 // One moment with the help it got, for reopening it during class ("My moments").
 route("GET", "/api/student/events/:id", (ctx) => {
   const u = needUser(ctx, "student");
@@ -775,6 +811,7 @@ if (isMain) {
   console.log(`  AI: ${aiProvider() === "api" ? `${MODEL} through the Anthropic API` : aiProvider() === "cli" ? `${MODEL} through Claude Code (claude -p)` : "off (set ANTHROPIC_API_KEY or install Claude Code)"}`);
   console.log(`  Transcript: ${engine.name === "deepgram" ? "Deepgram Nova-3" : engine.name !== "off" ? `${engine.name} (loading)` : `Chrome speech recognition (${engine.why || "no server engine"})`}`);
   console.log(`  Canvas OAuth: ${canvas.oauthConfig("usm").ready ? "configured" : `not configured (missing ${canvas.oauthConfig("usm").missing.join(", ")})`}`);
+  console.log(`  Illustrations: ${({ on: `Cloudflare Workers AI ${img.MODEL}`, off: "off (IMAGE_GENERATION_ENABLED is not true)", missing_credentials: "off (CLOUDFLARE_ACCOUNT_ID or CLOUDFLARE_API_TOKEN missing)" })[img.status()]}`);
   console.log(`  Demo accounts: ${DEMO ? `on (password ${DEMO_PASSWORD}; one-click buttons on the sign-in page)` : "off"}\n`);
   if (process.argv.includes("--share") || process.env.SHARE === "1") startTunnel();
 }
