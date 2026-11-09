@@ -1338,3 +1338,6 @@ main, body.student main:has(.live2), body.student main:has(.dash) { max-width: v
 .cf-note span { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; color: var(--soft); margin-right: 6px; }
 @media (max-width: 560px) { .cf-badges { margin-left: 0; } }
 .cf-note { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.join-head { margin: 2px 0 6px; font-size: clamp(24px, 3vw, 34px); font-weight: 800; line-height: 1.15; font-family: "Bricolage Grotesque", inherit; }
+:is(body.student, body.prof) .join-panel { background: var(--glass); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); box-shadow: var(--glass-shadow); border-radius: 24px; }
+@media (prefers-reduced-transparency: reduce) { :is(body.student, body.prof) .join-panel { background: var(--panel); -webkit-backdrop-filter: none; backdrop-filter: none; } }

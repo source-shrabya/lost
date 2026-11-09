@@ -490,8 +490,8 @@
         </div>
       </div>
       <section class="join-panel" id="joinPanel">
-        <div><p class="sign-label">Students sign in at</p><p class="sign-code site-url">${esc(info.site.replace(/^https?:\/\//, ""))}</p>
-          <p class="note">${info.section.students} student${info.section.students === 1 ? "" : "s"} in ${esc(info.section.name)}. They sign in with their school email and land in this class when you press Start. No codes.</p>
+        <div><p class="sign-label">How students join</p><p class="join-head">Students in the room get a Join button</p>
+          <p class="note">${info.section.students} student${info.section.students === 1 ? "" : "s"} in ${esc(info.section.name)}. When you press Start, every student on your list who is in this room sees "Join class" on their phone or laptop. No code, no QR, nothing to type.</p>
           <div class="row"><button class="primary big" id="startBtn">Start class</button><button id="discard" class="quiet">Discard</button></div>
           <p class="note">Start turns on your mic. Your words become the transcript.</p></div>
       </section>
@@ -520,7 +520,7 @@
       <details class="panel diag"><summary>Setup and diagnostics</summary><div id="diag"></div>
         ${info.demo ? `<div class="demo-tools"><h3>Demo tools <span class="badge warn">sample text</span></h3><p class="note">Types a short sample lecture into the transcript. Those lines are stored as "sample", and the AI and the summary are told so. Say out loud that you're using it.</p><button id="sample">Play sample lecture</button></div>` : ""}
       </details>
-      <dialog id="codeDlg" class="code-dlg" aria-labelledby="codeDlgH"><h2 id="codeDlgH">Students sign in at</h2><p class="sign-code site-url">${esc(info.site.replace(/^https?:\/\//, ""))}</p><p>With their school email. No codes.</p><form method="dialog"><button class="primary">Close</button></form></dialog>
+      <dialog id="codeDlg" class="code-dlg" aria-labelledby="codeDlgH"><h2 id="codeDlgH">How students join</h2><p>Students on your list who are in the room see a "Join class" button. No code, no QR, nothing to type.</p><p class="note">Backup address: ${esc(info.site.replace(/^https?:\/\//, ""))}</p><form method="dialog"><button class="primary">Close</button></form></dialog>
       <dialog id="endDlg" class="confirm-dlg" aria-labelledby="endDlgH" aria-describedby="endDlgP"><h2 id="endDlgH">End class for everyone?</h2>
         <p id="endDlgP">Recording stops, students leave the live view, and Lost writes the class summary. To pause instead, turn the microphone off.</p>
         <form method="dialog" class="row"><button value="stay" class="primary" autofocus>Keep teaching</button><button value="end" class="danger">End class</button></form></dialog>

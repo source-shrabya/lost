@@ -53,7 +53,7 @@
       : courses.length ? "Nothing open. You're caught up." : "";
     // The centre box: a live class if there is one, otherwise a class code field.
     const centre = live.length
-      ? live.map((c) => `<a class="home-live" href="#/course/${c.id}/live"><span class="dot live" aria-hidden="true"></span><span class="hl-text"><b>${esc(c.code)} is live now</b><span>${esc(c.name)}</span></span><span class="button gold">Enter class</span></a>`).join("")
+      ? live.map((c) => `<a class="home-live" href="#/course/${c.id}/live"><span class="dot live" aria-hidden="true"></span><span class="hl-text"><b>${esc(c.code)} is live now</b><span>${esc(c.name)}</span></span><span class="button gold">Join class</span></a>`).join("")
       : `<form class="home-join" id="homeJoin"><label for="joinCode">Class code</label>
           <input id="joinCode" name="code" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="No Canvas yet? Enter a class code" maxlength="12">
           <button class="button primary" type="submit">Join</button></form>`;
