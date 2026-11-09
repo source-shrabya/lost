@@ -23,7 +23,7 @@ const summary = await import("./lib/summary.js");
 const help = await import("./lib/help.js");
 const live = await import("./lib/live.js");
 const img = await import("./lib/illustrate.js");
-const { sessionTheme, courseArt, ART_IDS, ART } = await import("./lib/theme.js");
+const { sessionTheme, courseArt, cleanArt, autoArt, ART_IDS, ART } = await import("./lib/theme.js");
 const { startEngine, engine } = await import("./engines.js");
 const { seedDemo, DEMO_USERS, DEMO_PASSWORD } = await import("./lib/seed.js");
 const QRCode = (await import("qrcode")).default;
@@ -148,7 +148,7 @@ route("GET", "/api/me", (ctx) => {
   if (!ctx.session) return { user: null, demo: DEMO, demoUsers: DEMO ? DEMO_USERS.map(({ key, name, role, note, email }) => ({ key, name, role, note, email })) : [], demoPassword: DEMO ? DEMO_PASSWORD : null, profSignup: !!PROF_SIGNUP_CODE };
   const u = ctx.session.user;
   return { user: { id: u.id, name: u.name, email: u.email, role: u.role, demo: !!u.demo, onboarded: !!u.onboarded }, csrf: ctx.session.csrf,
-    illustrations: img.status() === "on",
+    illustrations: img.status() === "on", illustrationState: img.status(),
     unread: one("SELECT COUNT(*) n FROM notifications WHERE user_id = ? AND read_at IS NULL", u.id).n };
 }, { open: true });
 
@@ -326,13 +326,44 @@ route("GET", "/api/prof/courses/:id", (ctx) => {
   const u = needUser(ctx, "professor");
   const c = ownCourse(u, ctx.params.id);
   return {
-    course: { id: c.id, name: c.name, code: c.code, term: c.term, source: c.source, canvas_url: c.canvas_url, office_hours_url: c.office_hours_url, tutoring_url: c.tutoring_url, terms: c.terms, art: courseArt(c), artChosen: c.art || "" }, artChoices: ART_IDS.map((id) => ({ id, label: ART[id].label, icons: ART[id].icons })),
+    course: { id: c.id, name: c.name, code: c.code, term: c.term, source: c.source, canvas_url: c.canvas_url, office_hours_url: c.office_hours_url, tutoring_url: c.tutoring_url, terms: c.terms, art: courseArt(c), artChosen: cleanArt(c.art), artAuto: autoArt(c) }, artChoices: ART_IDS.map((id) => ({ id, label: ART[id].label, names: ART[id].names })),
     sections: all("SELECT id, name, join_code FROM sections WHERE course_id = ? ORDER BY name", c.id).map((s) => ({ ...s, students: one("SELECT COUNT(*) n FROM enrollments WHERE section_id = ?", s.id).n })),
     materials: all(`SELECT id, source, external_type, title, url, kind, module, visibility, visibility_reason, use_in_class, status, warning, source_updated_at, synced_at,
       (SELECT COUNT(*) FROM passages p WHERE p.material_id = m.id) passages FROM materials m WHERE course_id = ? ORDER BY status = 'removed', module, title`, c.id),
     sessions: all("SELECT * FROM lecture_sessions WHERE course_id = ? ORDER BY created_at DESC LIMIT 40", c.id).map(sessionCard),
     ...syncInfo(c.id),
     canvasConnected: !!canvas.connectionFor(u.id),
+  };
+});
+// Where students got lost, across every ended class of one course: per class the moments (topic, the
+// lines they tapped, cleared vs open, the professor's notes) and the topics that came back more than once.
+// Counts come from profAnalytics, so the small-group privacy floor still applies.
+route("GET", "/api/prof/courses/:id/confusion", (ctx) => {
+  const u = needUser(ctx, "professor");
+  const c = ownCourse(u, ctx.params.id);
+  const sessions = all("SELECT * FROM lecture_sessions WHERE course_id = ? AND status = 'ended' ORDER BY COALESCE(started_at, created_at) DESC LIMIT 30", c.id);
+  const classes = sessions.map((s) => {
+    const a = summary.profAnalytics(s.id);
+    const sec = one("SELECT name FROM sections WHERE id = ?", s.section_id);
+    return { session: sessionCard(s), section: sec?.name || "", duration: a.duration, totals: a.totals, moments: a.moments, notes: a.notes };
+  });
+  const topics = new Map();
+  for (const k of classes) for (const m of k.moments) {
+    if (!m.topic) continue;
+    const key = m.topic.trim().toLowerCase();
+    const t = topics.get(key) || { topic: m.topic.trim(), taps: 0, classes: new Set(), open: 0, last: null };
+    t.taps += m.taps; t.classes.add(k.session.id); t.open += m.unresolved || 0;
+    const when = k.session.started_at || k.session.ended_at;
+    if (!t.last || String(when) > String(t.last)) t.last = when;
+    topics.set(key, t);
+  }
+  const total = (f) => classes.reduce((n, k) => n + (k.totals[f] || 0), 0);
+  return {
+    course: { id: c.id, code: c.code, name: c.name },
+    totals: { classes: classes.length, classesWithTaps: classes.filter((k) => k.totals.taps).length, taps: total("taps"), resolved: total("resolved"), unresolved: total("unresolved"), checksPassed: total("checksPassed") },
+    topics: [...topics.values()].map((t) => ({ topic: t.topic, taps: t.taps, classes: t.classes.size, open: t.open, last: t.last }))
+      .sort((a, b) => b.classes - a.classes || b.taps - a.taps).slice(0, 8),
+    classes,
   };
 });
 route("POST", "/api/prof/courses/:id/sync", async (ctx) => {
@@ -344,7 +375,7 @@ route("POST", "/api/prof/courses/:id/settings", (ctx, b) => {
   const u = needUser(ctx, "professor");
   const c = ownCourse(u, ctx.params.id);
   const url = (v) => { v = String(v || "").trim(); if (!v) return ""; if (!/^https:\/\/[^\s<>"]+$/.test(v)) fail(400, "Links must start with https://"); return v.slice(0, 300); };
-  const art = b.art === undefined ? c.art : ART_IDS.includes(b.art) ? b.art : "";
+  const art = b.art === undefined ? c.art : cleanArt(b.art);
   run("UPDATE courses SET office_hours_url = ?, tutoring_url = ?, terms = ?, art = ? WHERE id = ?", url(b.office_hours_url ?? c.office_hours_url), url(b.tutoring_url ?? c.tutoring_url), String(b.terms ?? c.terms).slice(0, 8000), art, c.id);
   return { ok: true };
 });
@@ -537,13 +568,38 @@ function studentCourses(u) {
   return all(`SELECT c.id, c.name, c.code, c.term, c.source, c.art, c.terms, s.id section_id, s.name section_name, e.source enrolled_by
     FROM enrollments e JOIN sections s ON s.id = e.section_id JOIN courses c ON c.id = s.course_id WHERE e.user_id = ? ORDER BY c.code`, u.id).map((c) => {
     const active = one("SELECT id, title, status, started_at FROM lecture_sessions WHERE section_id = ? AND status IN ('live', 'ending') LIMIT 1", c.section_id);
-    const last = one(`SELECT s.id, s.title, s.ended_at, ss.status summary, ss.published, ss.payload FROM lecture_sessions s LEFT JOIN session_summaries ss ON ss.session_id = s.id
+    const last = one(`SELECT s.id, s.title, s.started_at, s.ended_at, ss.status summary, ss.published, ss.payload FROM lecture_sessions s LEFT JOIN session_summaries ss ON ss.session_id = s.id
       WHERE s.section_id = ? AND s.status = 'ended' ORDER BY s.ended_at DESC LIMIT 1`, c.section_id);
     const recap = last?.summary === "ready" && last.published ? recapOf(last.payload) : null;
     if (last) { delete last.payload; delete last.published; }
     return { ...c, art: courseArt(c), terms: undefined, active, last, recap, stats: summary.studentStats(u.id, c.id) };
   });
 }
+// Flash cards (trial): built from each class's published summary (terms and big ideas, with the
+// diagram when there is one) and the student's own lost moments (their question and the takeaway they got).
+route("GET", "/api/student/flashcards", (ctx) => {
+  const u = needUser(ctx, "student");
+  const decks = studentCourses(u).map((c) => {
+    const cards = [], seen = new Set();
+    const add = (card) => { const k = card.front.toLowerCase(); if (card.front && card.back && !seen.has(k)) { seen.add(k); cards.push(card); } };
+    for (const h of all(`SELECT e.topic, e.id, s.started_at FROM confusion_events e JOIN lecture_sessions s ON s.id = e.session_id
+        WHERE e.student_id = ? AND s.course_id = ? ORDER BY e.created_at DESC LIMIT 20`, u.id, c.id)) {
+      const r = one("SELECT payload FROM help_responses WHERE event_id = ? AND kind = 'explain' AND status = 'ok' ORDER BY created_at LIMIT 1", h.id);
+      let p = null; try { p = JSON.parse(r?.payload || "null"); } catch {}
+      const back = p?.takeaway?.text || p?.explanation?.text || (typeof p?.explanation === "string" ? p.explanation : "");
+      if (h.topic && back) add({ kind: "lost", front: h.topic, back, visual: p.visual || null, when: h.started_at });
+    }
+    for (const s of all(`SELECT s.started_at, ss.payload FROM lecture_sessions s JOIN session_summaries ss ON ss.session_id = s.id
+        WHERE s.section_id = ? AND ss.status = 'ready' AND ss.published = 1 ORDER BY s.started_at DESC LIMIT 10`, c.section_id)) {
+      let sh = null; try { sh = JSON.parse(s.payload)?.shared; } catch {}
+      if (sh?.v !== 2) continue;
+      for (const t of sh.topics || []) add({ kind: "idea", front: t.title, back: t.key_idea?.text || "", visual: t.visual || null, when: s.started_at });
+      for (const t of sh.concepts || []) add({ kind: "term", front: t.term, back: t.definition, visual: null, when: s.started_at });
+    }
+    return { course: { id: c.id, code: c.code, name: c.name }, cards };
+  });
+  return { decks };
+});
 route("GET", "/api/student/courses", (ctx) => {
   const u = needUser(ctx, "student");
   autoEnroll(u.id); // new classes from the open professor show up without signing in again
@@ -563,6 +619,17 @@ route("POST", "/api/student/join", (ctx, b) => {
   const active = one("SELECT id FROM lecture_sessions WHERE section_id = ? AND status = 'live'", sec.id);
   return { ok: true, course: c, section: { id: sec.id, name: sec.name }, activeSession: active?.id || null };
 });
+// Practice results for one moment: answered checks and whether one was answered right.
+function checkState(eventId) {
+  const r = one(`SELECT COUNT(*) answered, COALESCE(SUM(correct = 1), 0) passed FROM checks WHERE event_id = ? AND kind IN ('comprehension', 'review') AND chosen_idx IS NOT NULL`, eventId);
+  return { checksAnswered: r.answered, checkPassed: r.passed > 0 };
+}
+// Marks a card whose AI illustration is already drawn, so the page shows it without asking again.
+function withIllustration(card) {
+  if (!card?.payload?.illustration) return card;
+  const row = one("SELECT status FROM illustrations WHERE help_id = ?", card.id);
+  return { ...card, payload: { ...card.payload, illustration: { ...card.payload.illustration, ready: row?.status === "ok" } } };
+}
 route("GET", "/api/student/courses/:id", (ctx) => {
   const u = needUser(ctx, "student");
   const c = enrolledCourse(u, ctx.params.id);
@@ -578,10 +645,13 @@ route("GET", "/api/student/courses/:id", (ctx) => {
     const cards = all("SELECT id, kind, payload FROM help_responses WHERE event_id = ? AND kind != 'catchup' AND status = 'ok' ORDER BY created_at", h.id)
       .map((r) => { try { return { id: r.id, kind: r.kind, payload: JSON.parse(r.payload) }; } catch { return null; } }).filter(Boolean);
     const card = cards.find((k) => k.kind === "explain") || cards.find((k) => k.payload?.visual || k.payload?.illustration) || cards[0] || null;
-    return { ...h, card };
+    return { ...h, card: card ? withIllustration(card) : null, ...checkState(h.id) };
   });
-  return { course: { id: c.id, name: c.name, code: c.code, term: c.term, section: c.section_name, office_hours_url: c.office_hours_url, tutoring_url: c.tutoring_url },
-    active: sessions.find((s) => s.status === "live" || s.status === "ending") || null, sessions, history, stats: summary.studentStats(u.id, c.id) };
+  // Materials students may open: only ones marked for students and not removed. Text is never sent here.
+  const materials = all(`SELECT id, title, url, kind, module, source FROM materials WHERE course_id = ? AND visibility = 'students' AND status != 'removed' ORDER BY module, title`, c.id)
+    .map((m) => ({ ...m, url: /^https:\/\//.test(m.url) ? m.url : "" }));
+  return { course: { id: c.id, name: c.name, code: c.code, term: c.term, section: c.section_name, office_hours_url: c.office_hours_url, tutoring_url: c.tutoring_url, art: courseArt(c) },
+    active: sessions.find((s) => s.status === "live" || s.status === "ending") || null, sessions, history, materials, stats: summary.studentStats(u.id, c.id) };
 });
 route("GET", "/api/student/sessions/:id/live", (ctx) => {
   const u = needUser(ctx, "student");
@@ -591,7 +661,7 @@ route("GET", "/api/student/sessions/:id/live", (ctx) => {
   const wantLines = ctx.url.searchParams.get("lines") === "1";
   const since = Math.max(0, Number(ctx.url.searchParams.get("since")) || 0), rev = Number(ctx.url.searchParams.get("rev")) || 0;
   const from = rev !== r.editRev ? 0 : since;
-  const c = one("SELECT name, code FROM courses WHERE id = ?", s.course_id);
+  const c = one("SELECT id, name, code FROM courses WHERE id = ?", s.course_id);
   return {
     status: s.status, title: s.title, course: c, clock: live.sessionClock(s), rev: r.editRev, full: from === 0,
     now: wantLines && s.status === "live" ? r.interim.slice(-300) : "",
@@ -700,16 +770,33 @@ route("GET", "/api/help/:id/illustration.img", (ctx) => {
   const r = illustrationFor(u, ctx.params.id);
   return img.readImage(r.id) || fail(404, "Not drawn yet.");
 });
+// Illustration diagnostics for professors: whether drawing is set up, today's use against the cap,
+// and recent failure codes for this professor's courses. Students only ever see plain messages.
+route("GET", "/api/prof/illustrations", (ctx) => {
+  const u = needUser(ctx, "professor");
+  const failures = all(`SELECT i.error, COUNT(*) n, MAX(i.requested_at) last FROM illustrations i JOIN help_responses h ON h.id = i.help_id JOIN confusion_events e ON e.id = h.event_id
+    JOIN lecture_sessions s ON s.id = e.session_id JOIN courses c ON c.id = s.course_id WHERE c.owner_id = ? AND i.status = 'failed' AND i.requested_at >= ? GROUP BY i.error`, u.id, new Date(Date.now() - 7 * 864e5).toISOString());
+  return { ...img.usage(), failures };
+});
 // One moment with the help it got, for reopening it during class ("My moments").
 route("GET", "/api/student/events/:id", (ctx) => {
   const u = needUser(ctx, "student");
   const ev = ownEvent(u, ctx.params.id);
   const anchor = ev.anchor_line ?? ev.line_idx;
+  const s = one("SELECT id, course_id, title, status, started_at FROM lecture_sessions WHERE id = ?", ev.session_id);
   return {
-    event: { id: ev.id, t: ev.t, line_idx: ev.line_idx, status: ev.self_status, topic: ev.topic || "" },
+    event: { id: ev.id, t: ev.t, line_idx: ev.line_idx, status: ev.self_status, topic: ev.topic || "", question: ev.question || "", interim: ev.interim_text || "" },
+    session: s,
     line: anchor != null ? one("SELECT idx, t, text FROM transcript_lines WHERE session_id = ? AND idx = ?", ev.session_id, anchor) : null,
+    // What was said around the moment: three lines before and two after (only lines already spoken).
+    context: anchor != null ? all("SELECT idx, t, text FROM transcript_lines WHERE session_id = ? AND idx BETWEEN ? AND ? ORDER BY idx", ev.session_id, anchor - 3, anchor + 2) : [],
     cards: all("SELECT id, kind, attempt, status, payload FROM help_responses WHERE event_id = ? AND kind != 'catchup' AND status IN ('ok', 'no_ai', 'failed') ORDER BY created_at", ev.id)
-      .map((r) => ({ id: r.id, kind: r.kind, attempt: r.attempt, status: r.status, payload: parse(r.payload) })),
+      .map((r) => withIllustration({ id: r.id, kind: r.kind, attempt: r.attempt, status: r.status, payload: parse(r.payload) })),
+    checks: all("SELECT id, kind, question, choices, chosen_idx, correct, skipped, why, correct_idx FROM checks WHERE event_id = ? ORDER BY created_at", ev.id)
+      .map((k) => ({ id: k.id, kind: k.kind, question: k.question, choices: parse(k.choices, []), chosen: k.chosen_idx, correct: k.correct == null ? null : !!k.correct, skipped: !!k.skipped,
+        ...(k.chosen_idx != null ? { why: k.why, correctIndex: k.correct_idx } : {}) })),
+    officeHours: one("SELECT text FROM office_hours_questions WHERE event_id = ?", ev.id)?.text || null,
+    ...checkState(ev.id),
   };
 });
 route("POST", "/api/student/events/:id/check", async (ctx) => {
@@ -742,7 +829,7 @@ route("GET", "/api/student/sessions/:id", (ctx) => {
 
 // ---------- static pages ----------
 const PAGES = { "/": null, "/login": "login.html", "/prof": "prof.html", "/student": "student.html" };
-const STATIC = new Set(["style.css", "common.js", "visuals.js", "theme.js", "keys.js", "login.js", "prof.js", "student.js", "favicon.svg"]);
+const STATIC = new Set(["style.css", "common.js", "visuals.js", "theme.js", "covers.js", "keys.js", "login.js", "prof.js", "student.js", "favicon.svg"]);
 const TYPES = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml" };
 
 async function handle(req, res) {

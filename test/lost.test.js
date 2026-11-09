@@ -51,6 +51,7 @@ function fakeAi({ prompt, label }) {
         qualifications: [], uncertainty: "", connection: claim("It builds on single parity.", [`L${lines[0]}`]),
         visual: aiMode === "novisual" ? null : aiMode === "badvisual" ? wire("decision", { items: [{ id: "a", label: "Flip?", kind: "outcome" }, { id: "b", label: "x", kind: "outcome" }], links: [{ from: "a", to: "b", label: "" }] })
           : wire("bit_grid", { rows: ["1010", "1100", "0111"], settings: { flip_row: 1, flip_col: 2 } }),
+        purpose: aiMode === "novisual" ? "analogy" : "comparison",
         illustration: { prompt: "A student flipping one light switch in a wall of switches", caption: "One flipped switch stands out in its row and column.", alt: "A wall of light switches with one flipped the other way." },
         diagnostic: label === "help:explain" ? { question: "What does one parity bit catch?", choices: ["one flipped bit", "two flipped bits", "nothing"], correct_index: 0, prerequisite: "single parity" } : null,
       };
@@ -482,6 +483,13 @@ test("resolution counts: only 'That helped' resolves; checks are counted separat
   assert.equal(a.totals.taps, 1); assert.equal(a.totals.students, 1); assert.equal(a.totals.resolved, 1);
   assert.equal(a.totals.categories, null, "one student: no breakdown");
   assert.equal(a.moments[0].small, true); assert.equal(a.moments[0].students, null);
+  // The course-wide "where they got lost" view carries the same class with the same privacy floor.
+  const cf = (await rivera.get(`/api/prof/courses/${course.id}/confusion`)).data;
+  const k = cf.classes.find((x) => x.session.id === sid);
+  assert.ok(k, "ended class is listed");
+  assert.equal(k.totals.taps, 1); assert.equal(k.moments[0].small, true); assert.equal(k.moments[0].students, null);
+  assert.ok(cf.totals.taps >= 1);
+  assert.ok((await jordan.get(`/api/prof/courses/${course.id}/confusion`)).status >= 400, "students can't read it");
   ai.setFakeProvider(null);
 });
 
@@ -678,6 +686,46 @@ test("Got it resolves and can be undone; closing help doesn't resolve; moments s
   ai.setFakeProvider(null);
 });
 
+test("student workspace data: materials only for students, moment detail with context and checks, status only on request", async () => {
+  ai.setFakeProvider(fakeAi); aiMode = "ok";
+  const rivera = await as("prof"), jordan = await as("jordan"), riley = await as("riley");
+  await new Promise((r) => setTimeout(r, 2500)); // let the per-user request limit refill after the tests above
+  const { sid } = await liveSession(rivera);
+  for (const t of ["Parity adds one bit.", "Even parity makes the count of ones even.", "Two dimensional parity uses rows and columns.", "The crossing shows the flipped bit.", "Next, checksums."])
+    await say(rivera, sid, t);
+  const live = (await jordan.get(`/api/student/sessions/${sid}/live?lines=1`)).data;
+  assert.ok(live.lines?.length >= 3, JSON.stringify(live).slice(0, 300));
+  const cid = live.course.id;
+  assert.ok(cid, "the live view names its course, so the workspace can open it");
+  const tap = (await jordan.post(`/api/student/sessions/${sid}/lost`)).data;
+  await jordan.post(`/api/student/events/${tap.event.id}/help`, { kind: "explain", anchor: "phrase", line: live.lines.at(-3).idx });
+  // Materials: student-visible only, no text.
+  const d = (await jordan.get(`/api/student/courses/${cid}`)).data;
+  assert.ok(Array.isArray(d.materials));
+  const staff = db.all("SELECT id FROM materials WHERE course_id = ? AND visibility = 'staff'", cid).map((m) => m.id);
+  assert.ok(d.materials.every((m) => !staff.includes(m.id)), "professor-only materials stay hidden");
+  assert.ok(d.materials.every((m) => !("text" in m) && (m.url === "" || m.url.startsWith("https://"))));
+  assert.match(d.course.art, /^[a-z]+\/[0-2]$/);
+  const h = d.history.find((x) => x.id === tap.event.id);
+  assert.equal(h.checkPassed, false); assert.equal(h.checksAnswered, 0);
+  // Detail: the line, a few lines around it, the session and its checks.
+  const ev = (await jordan.get(`/api/student/events/${tap.event.id}`)).data;
+  assert.equal(ev.session.id, sid); assert.equal(ev.session.course_id, cid);
+  assert.ok(ev.context.length >= 3 && ev.context.some((l) => l.idx === ev.line.idx));
+  assert.ok(ev.context.every((l) => l.idx <= ev.line.idx + 2 && l.idx >= ev.line.idx - 3));
+  assert.ok(ev.checks.some((k) => k.kind === "diagnostic" && k.correctIndex === undefined), "unanswered checks don't reveal the answer");
+  // Reading the detail (any tab) never resolves it; only the explicit status call does.
+  assert.equal(db.one("SELECT self_status FROM confusion_events WHERE id = ?", tap.event.id).self_status, "open");
+  const chk = (await jordan.post(`/api/student/events/${tap.event.id}/check`)).data;
+  await jordan.post(`/api/student/checks/${chk.id}/answer`, { chosen: 0 });
+  const after = (await jordan.get(`/api/student/courses/${cid}`)).data.history.find((x) => x.id === tap.event.id);
+  assert.equal(after.checkPassed, true); assert.equal(after.self_status, "open", "a right answer is shown separately and doesn't mark it understood");
+  // Another student can't read it.
+  assert.equal((await riley.get(`/api/student/events/${tap.event.id}`)).status, 404);
+  await rivera.post(`/api/prof/sessions/${sid}/end`);
+  ai.setFakeProvider(null);
+});
+
 test("school-email sign-in: students go straight in, professors need their password", async () => {
   const start = (body) => fetch(`${base}/api/auth/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   assert.equal((await start({ email: "new.student@usm.edu", institution: "nowhere" })).status, 400, "the university must exist");
@@ -691,23 +739,45 @@ test("school-email sign-in: students go straight in, professors need their passw
   assert.equal((await start({ email: "dr.rivera@demo.lost", institution: inst, password: "wrong-password" })).status, 401);
 });
 
-test("course art: professors pick from fixed sets; anything else is ignored", async () => {
-  const rivera = await as("prof");
+test("course covers: subject and variant, stable per course, checked, saved on the course and shown to students", async () => {
+  const rivera = await as("prof"), jordan = await as("jordan");
   await new Promise((r) => setTimeout(r, 2500)); // let the per-address request limit refill after the tests above
   const c = await courseByCode(rivera, "CSC 311");
-  assert.equal(c.art, "computing", "guessed from the course name");
+  assert.match(c.art, /^computing\/[0-2]$/, "guessed from the course name, variant from the course id");
+  assert.equal((await courseByCode(rivera, "CSC 311")).art, c.art, "the same cover on every load");
+  const studentArt = async () => (await jordan.get("/api/student/courses")).data.courses.find((x) => x.code === "CSC 311").art;
+  assert.equal(await studentArt(), c.art);
+  await rivera.post(`/api/prof/courses/${c.id}/settings`, { art: "biology/2" });
+  assert.equal((await courseByCode(rivera, "CSC 311")).art, "biology/2");
+  assert.equal(await studentArt(), "biology/2", "students see the professor's choice");
+  const detail = (await rivera.get(`/api/prof/courses/${c.id}`)).data;
+  assert.equal(detail.course.artChosen, "biology/2");
+  assert.match(detail.course.artAuto, /^computing\/[0-2]$/);
+  assert.ok(detail.artChoices.some((a) => a.id === "micro") && detail.artChoices.some((a) => a.id === "macro"));
+  assert.ok(detail.artChoices.every((a) => a.names.length === 3));
   await rivera.post(`/api/prof/courses/${c.id}/settings`, { art: "sports" });
-  assert.equal((await courseByCode(rivera, "CSC 311")).art, "sports");
-  await rivera.post(`/api/prof/courses/${c.id}/settings`, { art: "<script>" });
-  assert.equal((await courseByCode(rivera, "CSC 311")).art, "computing", "unknown values fall back to the guess");
+  assert.match((await courseByCode(rivera, "CSC 311")).art, /^sports\/[0-2]$/, "a subject alone gets this course's variant");
+  await rivera.post(`/api/prof/courses/${c.id}/settings`, { art: "economics/1" });
+  assert.equal((await courseByCode(rivera, "CSC 311")).art, "micro/1", "older economics choices map to microeconomics");
+  for (const bad of ["<script>", "sports/9", "sports/-1", "sports/1.5", "../x"]) {
+    await rivera.post(`/api/prof/courses/${c.id}/settings`, { art: bad });
+    assert.equal((await courseByCode(rivera, "CSC 311")).art, c.art, `${bad} falls back to automatic`);
+  }
+  // Saving support links leaves the cover alone.
+  await rivera.post(`/api/prof/courses/${c.id}/settings`, { art: "math/1" });
+  await rivera.post(`/api/prof/courses/${c.id}/settings`, { office_hours_url: "https://example.edu/oh" });
+  assert.equal((await courseByCode(rivera, "CSC 311")).art, "math/1");
+  // A student can't change it.
+  assert.ok([403, 404].includes((await jordan.post(`/api/prof/courses/${c.id}/settings`, { art: "general/0" })).status));
+  await rivera.post(`/api/prof/courses/${c.id}/settings`, { art: "", office_hours_url: "" });
 });
 
-test("AI illustrations: drawn ahead for every card, prompt stays on the server, access checked, one call per card, failures keep the card", async () => {
+test("AI illustrations: on request, only for analogies, prompt stays on the server, access checked, one call per card, honest failures", async () => {
   const img = await import("../lib/illustrate.js");
   process.env.IMAGE_USER_BURST = "1000";
   process.env.IMAGE_PREDRAW = "0"; // this part checks the on-request path; drawing ahead is checked at the end
   Object.assign(process.env, { IMAGE_GENERATION_ENABLED: "true", CLOUDFLARE_ACCOUNT_ID: "acct-test", CLOUDFLARE_API_TOKEN: "tok-secret-test" });
-  ai.setFakeProvider(fakeAi); aiMode = "novisual"; // a picture is drawn only when the card has no diagram
+  ai.setFakeProvider(fakeAi); aiMode = "novisual"; // the model says this card's purpose is an analogy, so it may have a picture
   const rivera = await as("prof"), jordan = await as("jordan"), riley = await as("riley");
   const { sid } = await liveSession(rivera);
   await say(rivera, sid, "Two dimensional parity puts a parity bit on every row and every column.");
@@ -770,15 +840,18 @@ test("AI illustrations: drawn ahead for every card, prompt stays on the server, 
     [() => ({ status: 200, body: { result: { image: Buffer.from("not an image").toString("base64") }, success: true } }), 502, /isn't an image/],
     [() => ({ status: 200, body: { result: { image: "<script>" }, success: true } }), 502, /isn't an image/],
     [() => ({ status: 200, wait: true, body: {} }), 504, /too long/],
+    // A plain rate limit is temporary: it must not be described as a used-up daily allowance.
+    [() => ({ status: 429, body: { success: false, errors: [{ code: 3040, message: "Capacity temporarily exceeded, please try again." }] } }), 429, /busy right now/],
   ];
   process.env.IMAGE_TIMEOUT_MS = "80";
-  const kinds = ["retry", "steps", "simpler", "retry", "steps"];
+  const kinds = ["retry", "steps", "simpler", "retry", "steps", "simpler"];
   for (const [i, [fn, code, msg]] of cases.entries()) {
     const c = i < 3 ? await fresh(kinds[i]) : card; // later cases reuse a card whose image isn't cached
     const target = i < 3 ? c.id : (await fresh(kinds[i])).id;
     reply = fn;
     const res = await jordan.post(`/api/help/${target}/illustration`);
     assert.equal(res.status, code, `case ${i}: ${JSON.stringify(res.data)}`); assert.match(res.data.error, msg);
+    if (i === 5) assert.doesNotMatch(res.data.error, /allowance|used up|tomorrow/);
     const still = (await jordan.get(`/api/student/events/${ev.id}`)).data.cards.find((x) => x.id === target);
     assert.equal(still.status, "ok"); assert.ok(still.payload.takeaway);
   }
@@ -789,32 +862,63 @@ test("AI illustrations: drawn ahead for every card, prompt stays on the server, 
   const failedId = () => db.one("SELECT help_id FROM illustrations WHERE status = 'failed' LIMIT 1").help_id;
   process.env.IMAGE_DAILY_MAX = "1"; // one image already drawn today
   const capped = await jordan.post(`/api/help/${failedId()}/illustration`);
-  assert.equal(capped.status, 429); assert.match(capped.data.error, /today/);
+  assert.equal(capped.status, 429); assert.match(capped.data.error, /daily limit/); assert.match(capped.data.error, /every class/);
+  // Professors see the technical state; students can't.
+  const diag = (await rivera.get("/api/prof/illustrations")).data;
+  assert.equal(diag.state, "on"); assert.equal(diag.dailyMax, 1); assert.ok(diag.usedToday >= 1);
+  assert.ok(diag.failures.length && diag.failures.every((f) => typeof f.error === "string" && f.n >= 1), JSON.stringify(diag.failures));
+  assert.equal((await jordan.get("/api/prof/illustrations")).status, 403);
   delete process.env.IMAGE_DAILY_MAX;
   process.env.IMAGE_USER_BURST = "1";
   await new Promise((ok) => setTimeout(ok, 50));
   const lim1 = await jordan.post(`/api/help/${failedId()}/illustration`);
   const lim2 = await jordan.post(`/api/help/${failedId()}/illustration`);
   assert.equal(lim1.status, 200); assert.equal(lim2.status, 429); assert.match(lim2.data.error, /Wait a little/);
-  assert.equal(calls.length, 7); // 1 drawn + 5 failure cases + 1 after the cap; the limited request never reached Cloudflare
+  assert.equal(calls.length, 8); // 1 drawn + 6 failure cases + 1 after the cap; the limited request never reached Cloudflare
 
-  // Drawing ahead: a new card starts its picture without anyone asking, and the later request reuses it.
-  delete process.env.IMAGE_PREDRAW; process.env.IMAGE_USER_BURST = "1000";
-  const ahead = await fresh("prereq");
+  // One card can't keep failing forever: after three failures Lost stops asking Cloudflare for it.
+  reply = () => ({ status: 401, body: { success: false, errors: [{ message: "Authentication error" }] } });
+  process.env.IMAGE_USER_BURST = "1000";
+  const stubborn = (await fresh("prereq")).id;
+  // (asked by the course professor, who may also draw a card: this student just used up their burst above)
+  for (let k = 0; k < 3; k++) assert.equal((await rivera.post(`/api/help/${stubborn}/illustration`)).status, 502);
+  const before = calls.length;
+  const stop = await rivera.post(`/api/help/${stubborn}/illustration`);
+  assert.equal(stop.status, 429); assert.match(stop.data.error, /stopped trying/); assert.equal(calls.length, before);
+  reply = () => ({ status: 200, body: { result: { image: jpeg.toString("base64") }, success: true } });
+
+  // Nothing is drawn until someone asks, unless IMAGE_PREDRAW=1.
+  const waiting = await fresh("steps");
+  const callsNow = calls.length;
+  const lazy = (await jordan.post(`/api/student/events/${ev.id}/help`, { kind: "simpler", attempt: 2 })).data;
+  await new Promise((ok) => setTimeout(ok, 120));
+  assert.equal(calls.length, callsNow, "no drawing without a request");
+  assert.equal(db.one("SELECT status FROM illustrations WHERE help_id = ?", lazy.id).status, "ready");
+  assert.equal(lazy.payload.visual.type, "concept_map", "the diagram is there before any picture");
+  // A drawn picture is marked ready when the moment is opened again, so the page shows it without asking.
+  assert.equal((await rivera.post(`/api/help/${lazy.id}/illustration`)).status, 200);
+  const reopened = (await jordan.get(`/api/student/events/${ev.id}`)).data.cards.find((x) => x.id === lazy.id);
+  assert.equal(reopened.payload.illustration.ready, true);
+  assert.ok(waiting.id);
+  process.env.IMAGE_PREDRAW = "1";
+  const ahead = (await jordan.post(`/api/student/events/${ev.id}/help`, { kind: "retry", attempt: 2 })).data;
   for (let i = 0; i < 50 && db.one("SELECT status FROM illustrations WHERE help_id = ?", ahead.id)?.status !== "ok"; i++) await new Promise((ok) => setTimeout(ok, 20));
   assert.equal(db.one("SELECT status FROM illustrations WHERE help_id = ?", ahead.id).status, "ok");
-  assert.equal(calls.length, 8);
-  assert.equal((await jordan.post(`/api/help/${ahead.id}/illustration`)).status, 200); assert.equal(calls.length, 8);
-  assert.equal(ahead.payload.backupVisual.type, "concept_map"); // shown if the picture can't be drawn
+  const afterAhead = calls.length;
+  assert.equal((await rivera.post(`/api/help/${ahead.id}/illustration`)).status, 200); assert.equal(calls.length, afterAhead, "reused, not drawn again");
+  delete process.env.IMAGE_PREDRAW;
 
-  // One thing to look at per card: a diagram means no picture; no diagram and no drawing means the backup map.
+  // A picture only when the model says the purpose is an analogy or scene: a comparison card with a diagram has none.
   aiMode = "ok";
-  const withDiagram = (await jordan.post(`/api/student/events/${ev.id}/help`, { kind: "simpler", attempt: 2 })).data;
+  const withDiagram = (await jordan.post(`/api/student/events/${ev.id}/help`, { kind: "simpler", attempt: 3 })).data;
   assert.equal(withDiagram.payload.visual.type, "bit_grid"); assert.equal(withDiagram.payload.illustration, undefined);
+  assert.equal(withDiagram.payload.purpose, "comparison");
+  // Turned off: the card keeps its picture offer (the page says pictures are off) and nothing is drawn.
   aiMode = "novisual"; delete process.env.IMAGE_GENERATION_ENABLED;
-  const noDraw = (await jordan.post(`/api/student/events/${ev.id}/help`, { kind: "simpler", attempt: 3 })).data;
-  assert.equal(noDraw.payload.visual.type, "concept_map"); assert.equal(noDraw.payload.illustration, undefined);
-  assert.equal(calls.length, 8);
+  assert.equal((await jordan.get("/api/me")).data.illustrationState, "off");
+  const offCard = (await jordan.post(`/api/student/events/${ev.id}/help`, { kind: "steps", attempt: 2 })).data;
+  assert.equal(offCard.payload.visual.type, "concept_map");
+  assert.equal((await jordan.post(`/api/help/${offCard.id}/illustration`)).status, 503);
   aiMode = "ok";
 
   for (const k of ["IMAGE_GENERATION_ENABLED", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN", "IMAGE_USER_BURST", "IMAGE_DAILY_MAX", "IMAGE_PREDRAW"]) delete process.env[k];

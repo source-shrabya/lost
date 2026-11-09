@@ -48,7 +48,7 @@
     const me = await fetch("/api/me", { cache: "no-store" }).then((r) => r.json()).catch(() => ({}));
     if (!me.user) { location.href = `/login?next=${encodeURIComponent(location.pathname + location.hash)}`; return; }
     if (me.user.role !== role) { location.href = me.user.role === "professor" ? "/prof" : "/student"; return; }
-    csrf = me.csrf; L.me = me.user; L.illustrations = !!me.illustrations;
+    csrf = me.csrf; L.me = me.user; L.illustrations = !!me.illustrations; L.illustrationState = me.illustrationState || (me.illustrations ? "on" : "off");
     renderHeader(me);
     L.routes = routes;
     window.addEventListener("hashchange", () => { L.clearBackdrop?.(); L.render(); });
@@ -144,17 +144,38 @@
 
   // ---------- router ----------
   // Each route returns nothing; it may register cleanup with L.onLeave(fn) (polls, recorders).
+  // A route can also call L.keep(key, update): while the next hash gives the same route and key, the
+  // router calls update(args, params) instead of rebuilding the page. The student course workspace uses
+  // this so switching sections never restarts the live class, its audio or its polling.
   let leaving = [];
+  let kept = null; // { fn, key, update }
   L.onLeave = (fn) => leaving.push(fn);
+  L.keep = (key, update) => { kept = { fn: L._current, key, update }; };
+  // A small cleanup group for one part of a page (a section inside a kept route).
+  L.scope = () => { const fns = []; return { add: (fn) => fns.push(fn), dispose: () => { for (const fn of fns.splice(0)) { try { fn(); } catch {} } } }; };
+  L.match = (pathPart) => {
+    for (const [pattern, fn, opts] of L.routes) {
+      const m = pathPart.match(pattern);
+      if (m) return { fn, opts: opts || {}, args: m.slice(1).map((x) => (x == null ? undefined : decodeURIComponent(x))) };
+    }
+    return null;
+  };
   L.render = async () => {
-    for (const fn of leaving.splice(0)) { try { fn(); } catch {} }
     const hash = location.hash.replace(/^#/, "") || "/";
     const [pathPart, query = ""] = hash.split("?");
     const params = Object.fromEntries(new URLSearchParams(query));
+    const hit = L.match(pathPart);
+    if (hit && kept && kept.fn === hit.fn && hit.opts.key && hit.opts.key(hit.args) === kept.key) {
+      try { await kept.update(hit.args, params); } catch (e) { if (e.name !== "AbortError" && e.status !== 401) L.toast(e.message, "error"); }
+      return;
+    }
+    kept = null;
+    for (const fn of leaving.splice(0)) { try { fn(); } catch {} }
     const app = $("#app");
     for (const [pattern, fn] of L.routes) {
       const m = pathPart.match(pattern);
       if (!m) continue;
+      L._current = fn;
       app.innerHTML = `<p class="note loading">Loading…</p>`;
       try { await fn(app, m.slice(1).map((x) => (x == null ? undefined : decodeURIComponent(x))), params); }
       catch (e) { if (e.name !== "AbortError" && e.status !== 401) app.innerHTML = L.errorBox(e.message); $("#retryView")?.addEventListener("click", () => L.render()); }
@@ -168,7 +189,7 @@
   L.errorBox = (msg) => `<div class="error-box" role="alert"><p>${esc(msg)}</p><button id="retryView">Try again</button></div>`;
 
   // Poll every ms while the route is open. fn receives an AbortSignal.
-  L.poll = (fn, ms = 1000) => {
+  L.poll = (fn, ms = 1000, scope = null) => {
     let stop = false, ctrl = null, t = null;
     const tick = async () => {
       if (stop) return;
@@ -177,11 +198,11 @@
       if (!stop) t = setTimeout(tick, document.hidden ? Math.max(ms, 4000) : ms);
     };
     tick();
-    L.onLeave(() => { stop = true; clearTimeout(t); ctrl?.abort(); });
+    (scope ? scope.add : L.onLeave)(() => { stop = true; clearTimeout(t); ctrl?.abort(); });
   };
   L.online = (ok, msg) => {
     const b = $("#offline"); if (!b) return;
-    if (ok === !b.hidden) return;
+    if (ok === b.hidden) return;
     b.hidden = ok; if (!ok) b.textContent = `Reconnecting… ${msg || ""}`;
   };
 

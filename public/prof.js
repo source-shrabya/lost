@@ -15,18 +15,91 @@
   async function dashboard(app) {
     const { courses } = await api("/api/prof/courses");
     if (!courses.length && !Lost.me.onboarded) { location.hash = "#/onboarding"; return; }
-    app.innerHTML = `
-      <div class="page-head"><h1>Your courses</h1><a class="button" href="#/onboarding">Add courses</a></div>
-      ${courses.length ? `<ul class="course-grid">${courses.map((c) => `
-        <li class="course-card">
-          ${Lost.courseArt(c.art, c.id)}
-          <div class="cc-head"><span class="cc-code">${esc(c.code)}</span>${c.source === "demo" ? sourceBadge(c.source) : ["failed", "partial"].includes(c.sync?.status) ? syncBadge(c.sync) : ""}</div>
-          <h2><a href="#/course/${c.id}">${esc(c.name)}</a></h2>
-          <p class="note">${c.sections.map((s) => `${esc(s.name)} · ${s.students} student${s.students === 1 ? "" : "s"}`).join("<br>")}</p>
-          ${c.active ? `<p class="cc-line"><span class="badge ${c.active.status === "live" ? "live" : ""}">${sessionLabel(c.active)}</span></p>` : c.recent?.taps ? `<p class="cc-line note">${c.recent.taps} tap${c.recent.taps === 1 ? "" : "s"} last class</p>` : ""}
-          ${c.counts.total ? "" : `<p class="cc-line note">No materials yet</p>`}
-          <a class="button primary" href="#/course/${c.id}">${c.active?.status === "live" ? "Return to class" : "Open class"}</a>
-        </li>`).join("")}</ul>` : `<div class="empty-state"><p>No courses yet.</p><a class="button primary" href="#/onboarding">Set up your first course</a></div>`}`;
+    // Live classes first, then classes set up but not started, then the most recently taught.
+    const rank = (c) => (c.active?.status === "live" ? 0 : c.active ? 1 : 2);
+    const sorted = [...courses].sort((a, b) => rank(a) - rank(b) || String(b.recent?.ended_at || "").localeCompare(String(a.recent?.ended_at || "")) || String(a.code).localeCompare(String(b.code)));
+    const h = new Date().getHours();
+    const hello = h < 5 ? "Up late" : h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+    const nm = String(Lost.me?.name || "").trim().split(/\s+/), first = /^(prof|dr|mr|ms|mrs)\.?$/i.test(nm[0] || "") ? nm.slice(0, 2).join(" ") : nm[0];
+    const live = sorted.filter((c) => c.active?.status === "live");
+    const ready = sorted.filter((c) => c.active && c.active.status !== "live");
+    const startable = sorted.filter((c) => c.sections.length);
+    // The centre box: a live class to return to, otherwise "start a class" in one line.
+    const centre = live.length
+      ? live.map((c) => `<a class="home-live" href="#/live/${c.active.id}"><span class="dot live" aria-hidden="true"></span><span class="hl-text"><b>${esc(c.code)} is live now</b><span>${esc(c.name)}</span></span><span class="button gold">Return to class</span></a>`).join("")
+      : startable.length ? `<form class="home-join home-start" id="homeStart"><label for="startSec">Class to start</label>
+          <select id="startSec">${startable.map((c) => c.sections.map((sec) => `<option value="${c.id}|${sec.id}">${esc(c.code)} · ${esc(c.name)}${c.sections.length > 1 ? ` · ${esc(sec.name)}` : ""}</option>`).join("")).join("")}</select>
+          <button class="button primary" type="submit">Set up class</button></form>`
+      : `<a class="home-live" href="#/onboarding"><span class="hl-text"><b>Add your first course</b><span>Bring it in from Canvas or set it up by hand</span></span><span class="button primary">Add courses</span></a>`;
+    const sub = live.length ? "" : ready.length ? `${ready.map((c) => esc(c.code)).join(", ")} ${ready.length === 1 ? "is" : "are"} set up and waiting for you to press Start.`
+      : courses.length ? "Setting up doesn't start recording. You press Start when you're ready." : "";
+    const side = courses.length ? `<nav class="ws-side home-side" aria-label="Your courses">
+        <a class="hs-home on" href="#/" aria-current="page">Home</a>
+        <p class="hs-head">Courses</p>
+        <ul class="hs-list">${sorted.map((c) => {
+          const isLive = c.active?.status === "live";
+          return `<li><a class="hs-link${isLive ? " is-live" : ""}" href="${isLive ? `#/live/${c.active.id}` : `#/course/${c.id}`}">
+            <span class="hs-art">${Lost.courseArt(c.art, c.id)}</span>
+            <span class="hs-text"><span class="hs-code">${esc(c.code)}</span><span class="hs-name">${esc(c.name)}</span></span>
+            ${isLive ? `<span class="hs-live"><span class="dot live" aria-hidden="true"></span><span class="visually-hidden">Live now</span></span>` : ""}</a></li>`;
+        }).join("")}</ul>
+        <a class="hs-add" href="#/onboarding">+ Add courses</a></nav>` : "";
+    app.innerHTML = `<div class="ws home-ws">${side}<div class="ws-main home home2">
+      <div class="home-hero">
+        <h1 class="home-hello">${esc(hello)}${first ? `, ${esc(first)}` : ""}</h1>
+        ${centre}
+        ${sub ? `<p class="home-sub">${sub}</p>` : ""}
+        <aside class="home-hint" aria-label="How classes work with Canvas">
+          <span class="hh-tag">With Canvas</span>
+          <p>Your Canvas courses, sections and class lists come in on their own. Students never scan a QR code or type a code. When you press Start, the class opens for the students on your list who are in the room, and closes when you end it.</p>
+        </aside>
+      </div>
+      ${courses.length ? `<section class="home-classes" aria-labelledby="hcTitle">
+          <div class="hc-head"><h2 id="hcTitle">Your courses</h2><span class="note">${courses.length} course${courses.length === 1 ? "" : "s"}</span></div>
+          <ul class="mini-grid">${sorted.map(profMini).join("")}</ul></section>` : ""}
+    </div></div>`;
+    $("#homeStart")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const [cid, sectionId] = $("#startSec").value.split("|");
+      const btn = e.submitter; if (btn) btn.disabled = true;
+      try {
+        const r = await api(`/api/prof/courses/${cid}/sessions`, { method: "POST", body: { sectionId, title: "", materialIds: [] } });
+        if (r.resumed) toast("That section already has an open class, so Lost opened it.");
+        location.hash = `#/live/${r.id}`;
+      } catch (err) { toast(err.message, "error"); if (btn) btn.disabled = false; }
+    });
+  }
+  // Small course card for the welcome page.
+  function profMini(c) {
+    const live = c.active?.status === "live";
+    const students = c.sections.reduce((n, s) => n + s.students, 0);
+    const href = live ? `#/live/${c.active.id}` : `#/course/${c.id}`;
+    const flag = live ? `<span class="mc-flag live"><span class="dot live" aria-hidden="true"></span>Live</span>` : c.active ? `<span class="mc-flag">Set up</span>` : "";
+    return `<li><a class="mini-card${live ? " is-live" : ""}" href="${href}">
+      <span class="mc-cover">${Lost.courseArt(c.art, c.id)}</span>
+      <span class="mc-body">
+        <span class="mc-top"><span class="cc-code">${esc(c.code)}</span>${flag}</span>
+        <span class="mc-title">${esc(c.name)}</span>
+        <span class="mc-recap">${students} student${students === 1 ? "" : "s"}${c.recent?.taps ? ` · ${c.recent.taps} tap${c.recent.taps === 1 ? "" : "s"} last class` : ""}</span>
+        <span class="mc-meta">${c.recent ? `Last class ${esc(dayOf(c.recent.ended_at))}` : "No classes yet"}${c.source === "demo" ? " · Demo" : ""}</span>
+      </span></a></li>`;
+  }
+  const dayOf = (iso) => (iso ? new Date(iso).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) : "");
+  // One course card. Students see the same cover; the professor's card adds sections and last-class taps.
+  function profCard(c, { preview = false } = {}) {
+    const live = c.active?.status === "live";
+    const students = c.sections.reduce((n, s) => n + s.students, 0);
+    const status = c.active ? `<span class="badge ${live ? "live" : ""}">${live ? '<span class="dot live" aria-hidden="true"></span> ' : ""}${sessionLabel(c.active)}</span>`
+      : c.source === "demo" ? sourceBadge(c.source) : ["failed", "partial"].includes(c.sync?.status) ? syncBadge(c.sync) : "";
+    const title = preview ? `<span>${esc(c.name)}</span>` : `<a href="#/course/${c.id}">${esc(c.name)}</a>`;
+    return `<li class="course-card${live ? " is-live" : ""}">
+      <div class="cc-cover">${Lost.courseArt(c.art, c.id)}</div>
+      <p class="cc-top"><span class="cc-code">${esc(c.code)}</span>${status}</p>
+      <h2 class="cc-title">${title}</h2>
+      <p class="cc-recap-line note">${c.sections.length > 1 ? `${c.sections.length} sections · ` : c.sections[0] ? `${esc(c.sections[0].name)} · ` : ""}${students} student${students === 1 ? "" : "s"}${c.counts && !c.counts.total ? " · no materials yet" : ""}</p>
+      <p class="cc-meta">${c.recent ? `Last class ${esc(dayOf(c.recent.ended_at))}${c.recent.taps ? ` · ${c.recent.taps} tap${c.recent.taps === 1 ? "" : "s"}` : ""}` : "No classes yet"}</p>
+      <div class="cc-action">${preview ? `<span class="button primary" aria-hidden="true">Open class</span>` : `<a class="button primary" href="#/course/${c.id}">${live ? "Return to class" : "Open class"}</a>`}</div>
+    </li>`;
   }
 
   // ================= onboarding =================
@@ -128,49 +201,124 @@
   }
 
   // ================= course =================
+  // Small line icons for the course menu (decorative; every link has a text label).
+  const PICO = {
+    class: '<circle cx="12" cy="12" r="2.5"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M4.9 4.9a10 10 0 0 0 0 14.2M19.1 4.9a10 10 0 0 1 0 14.2"/>',
+    materials: '<path d="M4 5.5C4 4.7 4.7 4 5.5 4H10l2 2.5h6.5c.8 0 1.5.7 1.5 1.5v10.5c0 .8-.7 1.5-1.5 1.5h-13C4.7 20 4 19.3 4 18.5z"/>',
+    lost: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
+    history: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+    settings: '<circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/>',
+  };
+  const pico = (k) => `<svg class="ws-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${PICO[k]}</svg>`;
+
   async function coursePage(app, [id, view = "class"]) {
     const d = await api(`/api/prof/courses/${id}`);
     const c = d.course;
-    const views = [["class", "Class"], ["materials", `Materials (${d.counts.total})`], ["history", "Past classes"], ["settings", "Settings"]];
-    app.innerHTML = `
-      <p class="crumb"><a href="#/">Your courses</a></p>
-      <div class="page-head"><h1>${esc(c.code)} ${esc(c.name)}</h1>${sourceBadge(c.source)}</div>
-      <nav class="subnav" aria-label="Course">${views.map(([k, label]) => `<a href="#/course/${id}/${k}" ${k === view ? 'aria-current="page"' : ""}>${label}</a>`).join("")}</nav>
-      <div id="view"></div>`;
+    const open = d.sessions.find((s) => ["ready", "live", "ending"].includes(s.status));
+    const ended = d.sessions.filter((s) => s.status === "ended");
+    const students = d.sections.reduce((n, s) => n + s.students, 0);
+    const sub = { class: open?.status === "live" ? "Live now" : open ? "Set up, not started" : "", materials: `${d.counts.total} item${d.counts.total === 1 ? "" : "s"}`,
+      history: ended.length ? `${ended.length} class${ended.length === 1 ? "" : "es"}` : "", settings: "" };
+    const allTaps = ended.reduce((n, s) => n + (s.taps || 0), 0);
+    sub.lost = allTaps ? `${allTaps} tap${allTaps === 1 ? "" : "s"} so far` : "";
+    const views = [["class", "Class"], ["lost", "Where they got lost"], ["materials", "Materials"], ["history", "Past classes"], ["settings", "Settings"]];
+    app.innerHTML = `<div class="ws">
+      <nav class="ws-side" aria-label="${esc(c.code)} sections">
+        <a class="ws-back" href="#/"><span aria-hidden="true">←</span> Your courses</a>
+        <div class="ws-course">${Lost.courseArt(c.art, c.id)}<p><span class="cc-code">${esc(c.code)}</span><span class="ws-cname">${esc(c.name)}</span><span class="ws-sub">${students} student${students === 1 ? "" : "s"} · ${sourceLabel(c.source)}</span></p></div>
+        <ul class="ws-links" style="--cols:5">${views.map(([k, label]) => `<li><a class="ws-link${k === view ? " on" : ""}${k === "class" && open?.status === "live" ? " is-live" : ""}" href="#/course/${id}/${k}"${k === view ? ' aria-current="page"' : ""}>
+          ${pico(k)}<span class="ws-label"><span class="ws-long">${label}</span><span class="ws-short" aria-hidden="true">${k === "lost" ? "Lost" : label.split(" ")[0]}</span>${sub[k] ? `<span class="ws-sub">${k === "class" && open?.status === "live" ? '<span class="dot live" aria-hidden="true"></span> ' : ""}${esc(sub[k])}</span>` : ""}</span></a></li>`).join("")}</ul>
+      </nav>
+      <div class="ws-main" id="view"></div></div>`;
     const v = $("#view");
     if (view === "class") return classView(v, d);
-    if (view === "materials") return materialsView(v, d);
-    if (view === "history") return historyView(v, d);
-    if (view === "settings") return settingsView(v, d);
+    if (view === "lost") return confusionView(v, d);
+    v.innerHTML = `<div class="page-head"><h1>${esc(views.find(([k]) => k === view)?.[1] || "")}</h1></div><div id="viewBody"></div>`;
+    const body = $("#viewBody");
+    if (view === "materials") return materialsView(body, d);
+    if (view === "history") return historyView(body, d);
+    if (view === "settings") return settingsView(body, d);
   }
+  const sourceLabel = (src) => src === "demo" ? "Demo Canvas" : src === "canvas" ? "From Canvas" : src === "upload" ? "Uploaded" : src === "notes" ? "Pasted notes" : "Set up by hand";
 
+  // The class tab: one card to start today's class, then a few facts and the last classes.
   function classView(v, d) {
+    const c = d.course;
     const open = d.sessions.find((s) => ["ready", "live", "ending"].includes(s.status));
+    const ended = d.sessions.filter((s) => s.status === "ended");
     const usable = d.materials.filter((m) => m.status === "ok");
+    const students = d.sections.reduce((n, s) => n + s.students, 0);
+    const today = new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+    const secName = (id) => d.sections.find((s) => s.id === id)?.name || "";
     v.innerHTML = `
-      ${open ? `<section class="panel highlight"><h2>${open.status === "live" ? "Class is live" : "A class is set up"}</h2>
-        <p>${esc(d.sections.find((s) => s.id === open.section_id)?.name || "")}${open.title ? ` · ${esc(open.title)}` : ""} · ${sessionLabel(open)}</p>
-        <a class="button primary big" href="#/live/${open.id}">${open.status === "live" ? "Return to the live class" : "Open the class screen"}</a></section>` : ""}
-      <section class="panel">
-        <h2>${open ? "Set up another section" : "Start a class"}</h2>
-        <form id="newSession" class="stack">
-          <label for="sec">Section</label>
-          <select id="sec">${d.sections.map((s) => `<option value="${s.id}">${esc(s.name)} (${s.students} students)</option>`).join("")}</select>
-          <label for="ltitle">Today's topic (optional)</label><input id="ltitle" placeholder="For example: the basic rules">
-          <details><summary>Lecture materials for the AI to use (${usable.length} available)</summary>
-            <p class="note">Picked materials rank first when Lost explains something. Professor-only materials are never quoted to students.</p>
-            ${usable.map((m) => `<label class="inline mat-pick"><input type="checkbox" name="mat" value="${m.id}"> ${esc(m.title)} ${m.visibility === "staff" ? `<span class="badge">Professor only</span>` : ""}</label>`).join("") || `<p class="note">No materials yet. <a href="#/course/${d.course.id}/materials">Add some</a>.</p>`}
-          </details>
-          <button class="primary big">Set up class</button>
+      ${open ? `<a class="home-live course-live" href="#/live/${open.id}"><span class="dot ${open.status === "live" ? "live" : ""}" aria-hidden="true"></span>
+          <span class="hl-text"><b>${open.status === "live" ? "Class is live now" : "Today's class is set up"}</b><span>${esc(secName(open.section_id))}${open.title ? ` · ${esc(open.title)}` : ""}${open.status === "live" ? "" : " · press Start when you're ready"}</span></span>
+          <span class="button gold">${open.status === "live" ? "Return to class" : "Open class screen"}</span></a>` : ""}
+      <section class="start-card" aria-labelledby="scTitle">
+        <p class="sc-kicker">${esc(today)}</p>
+        <h1 id="scTitle">${open ? "Set up another section" : `Start ${esc(c.code)}`}</h1>
+        <form id="newSession" class="sc-form">
+          ${d.sections.length > 1 ? `<fieldset><legend>Section</legend><div class="pill-row">${d.sections.map((s, i) => `<label class="pill-opt"><input type="radio" name="sec" value="${s.id}" ${i === 0 ? "checked" : ""}><span>${esc(s.name)} · ${s.students} students</span></label>`).join("")}</div></fieldset>`
+            : `<input type="hidden" name="sec" value="${d.sections[0]?.id || ""}"><p class="sc-one">${esc(d.sections[0]?.name || "")} · ${d.sections[0]?.students || 0} students</p>`}
+          <div class="home-join sc-topic"><label for="ltitle">Today's topic</label><input id="ltitle" placeholder="Today's topic (optional)"><button class="button gold" type="submit">Set up class</button></div>
+          ${usable.length ? `<fieldset><legend>Materials the AI should use first <span class="note">(optional)</span></legend><div class="pill-row">${usable.map((m) => `<label class="pill-opt"><input type="checkbox" name="mat" value="${m.id}"><span>${esc(m.title)}${m.visibility === "staff" ? " · professor only" : ""}</span></label>`).join("")}</div></fieldset>`
+            : `<p class="note">No materials yet. <a href="#/course/${c.id}/materials">Add slides or notes</a> so explanations quote your class.</p>`}
+          <p class="note sc-note">Setting up doesn't start recording. You press Start on the next screen.</p>
         </form>
-        <p class="note">Setting up doesn't start recording. Press Start when you're ready.</p>
-      </section>`;
+      </section>
+      <ul class="sc-facts">
+        <li><span>Students</span><b>${students}</b></li>
+        <li><span>Last class</span><b>${ended[0] ? esc(dayOf(ended[0].ended_at || ended[0].started_at)) : "None yet"}</b></li>
+        <li><span>Taps last class</span><b>${ended[0] ? ended[0].taps : "0"}</b></li>
+        <li><span>Materials</span><b>${d.counts.total}</b></li>
+      </ul>
+      ${ended.length ? `<section class="panel sc-recent"><div class="hc-head"><h2>Recent classes</h2><a href="#/course/${c.id}/history">All past classes</a></div>
+        <ul class="sc-list">${ended.slice(0, 3).map((s) => `<li><a href="#/session/${s.id}"><span><b>${esc(dayOf(s.started_at || s.ended_at))}</b>${s.title ? ` · ${esc(s.title)}` : ""}</span><span class="note">${s.taps} tap${s.taps === 1 ? "" : "s"} · Open report</span></a></li>`).join("")}</ul></section>` : ""}`;
     $("#newSession").onsubmit = async (e) => {
       e.preventDefault();
-      const r = await api(`/api/prof/courses/${d.course.id}/sessions`, { method: "POST", body: { sectionId: $("#sec").value, title: $("#ltitle").value, materialIds: $$("input[name=mat]:checked").map((x) => x.value) } });
-      if (r.resumed) toast("That section already has an open class, so Lost opened it instead of making a duplicate.");
-      location.hash = `#/live/${r.id}`;
+      const btn = e.submitter; if (btn) btn.disabled = true;
+      try {
+        const sectionId = ($("input[name=sec]:checked") || $("input[name=sec]")).value;
+        const r = await api(`/api/prof/courses/${c.id}/sessions`, { method: "POST", body: { sectionId, title: $("#ltitle").value, materialIds: $$("input[name=mat]:checked").map((x) => x.value) } });
+        if (r.resumed) toast("That section already has an open class, so Lost opened it instead of making a duplicate.");
+        location.hash = `#/live/${r.id}`;
+      } catch (err) { toast(err.message, "error"); if (btn) btn.disabled = false; }
     };
+  }
+
+  // ================= where they got lost: every class of this course =================
+  async function confusionView(v, d) {
+    v.innerHTML = `<div class="page-head"><h1>Where they got lost</h1></div><p class="note">Loading…</p>`;
+    const r = await api(`/api/prof/courses/${d.course.id}/confusion`);
+    const T = r.totals;
+    const mmss = (t) => { t = Math.max(0, Math.round(t || 0)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; };
+    const pct = T.taps ? Math.round((T.resolved / T.taps) * 100) : 0;
+    const withTaps = r.classes.filter((k) => k.totals.taps);
+    const moment = (k, m) => `<li class="cf-moment">
+        <div class="cf-m-head"><span class="cf-time">${mmss(m.start)}</span><b>${esc(m.topic || "Topic not named yet")}</b>
+          <span class="cf-badges"><span class="mc-flag">${m.taps} tap${m.taps === 1 ? "" : "s"}</span>${m.small ? `<span class="mc-flag" title="Fewer than 3 students, so who and how many stay hidden">Small group</span>`
+            : `${m.students != null ? `<span class="mc-flag">${m.students} students</span>` : ""}${m.unresolved ? `<span class="mc-flag open">${m.unresolved} still lost</span>` : ""}${m.resolved ? `<span class="mc-flag good">${m.resolved} cleared</span>` : ""}`}</span></div>
+        ${m.lines.length ? `<ul class="cf-lines">${m.lines.slice(0, 3).map((l) => `<li><q>${esc(l.text || "")}</q><span class="note">${l.taps} tap${l.taps === 1 ? "" : "s"} on this line</span></li>`).join("")}</ul>` : `<p class="note">They tapped "I'm lost" without picking a line.</p>`}
+        ${(() => { const ns = k.notes.filter((n) => n.moment_idx === m.index); return ns.length ? `<p class="cf-note"><span>Your note</span> ${esc(ns[ns.length - 1].text)}</p>` : ""; })()}
+      </li>`;
+    v.innerHTML = `
+      <div class="page-head"><h1>Where they got lost</h1></div>
+      <p class="cf-lede">Every moment students marked in ${esc(r.course.code)}, newest class first, and what happened after.</p>
+      <ul class="sc-facts">
+        <li><span>Taps, all classes</span><b>${T.taps}</b></li>
+        <li><span>Classes with taps</span><b>${T.classesWithTaps} of ${T.classes}</b></li>
+        <li><span>Cleared afterwards</span><b>${T.taps ? `${pct}%` : "–"}</b></li>
+        <li><span>Still lost</span><b>${T.unresolved}</b></li>
+      </ul>
+      ${r.topics.length ? `<section class="panel"><h2>${r.topics.some((t) => t.classes > 1) ? "Topics that keep coming up" : "Topics they got lost on"}</h2>
+        <ul class="cf-topics">${r.topics.map((t) => `<li><b>${esc(t.topic)}</b><span class="note">${t.classes > 1 ? `${t.classes} classes · ` : ""}${t.taps} tap${t.taps === 1 ? "" : "s"}${t.open ? ` · ${t.open} still lost` : ""} · last ${esc(dayOf(t.last))}</span></li>`).join("")}</ul></section>` : ""}
+      ${withTaps.length ? withTaps.map((k) => `<section class="panel cf-class">
+          <div class="hc-head"><h2>${esc(dayOf(k.session.started_at || k.session.ended_at))}${k.session.title ? ` · ${esc(k.session.title)}` : ""}</h2><a href="#/session/${k.session.id}">Full report</a></div>
+          <p class="note cf-sub">${esc(k.section)}${k.duration ? ` · ${Math.round(k.duration / 60)} min` : ""} · ${k.totals.taps} tap${k.totals.taps === 1 ? "" : "s"}${k.totals.students ? ` from ${k.totals.students} student${k.totals.students === 1 ? "" : "s"}` : ""}${k.totals.checksPassed ? ` · ${k.totals.checksPassed} passed a check question` : ""}</p>
+          <ol class="cf-moments">${k.moments.map((m) => moment(k, m)).join("")}</ol>
+        </section>`).join("")
+        : `<section class="panel"><h2>No taps yet</h2><p>When students tap "I'm lost" in class, the moments show up here with the lines they marked.</p></section>`}
+      ${r.classes.length > withTaps.length ? `<p class="note">${r.classes.length - withTaps.length} class${r.classes.length - withTaps.length === 1 ? "" : "es"} had no taps.</p>` : ""}`;
   }
 
   function materialsView(v, d) {
@@ -258,17 +406,72 @@
           <label for="tut">Tutoring link (https)</label><input id="tut" type="url" value="${esc(c.tutoring_url)}" placeholder="https://">
           <label for="terms">Course terms for the speech engine, one per line</label><textarea id="terms" rows="5">${esc(c.terms)}</textarea>
           <p class="note">Terms help the transcript spell course words. Only the terms are sent to the speech engine, not your files.</p>
-          <fieldset class="art-pick"><legend>Course card drawing</legend>
-            <label class="art-opt"><input type="radio" name="art" value=""${!c.artChosen ? " checked" : ""}> <span>Pick for me <span class="note">(now: ${esc((d.artChoices.find((a) => a.id === c.art) || {}).label || "General")})</span></span></label>
-            ${d.artChoices.map((a) => `<label class="art-opt"><input type="radio" name="art" value="${a.id}"${c.artChosen === a.id ? " checked" : ""}> <span class="art-icons">${a.icons.slice(0, 3).map(Lost.artIcon).join("")}</span><span>${esc(a.label)}</span></label>`).join("")}
-            <p class="note">Line drawings made for Lost. Students see them on their course card.</p>
-          </fieldset>
-          <button class="primary">Save</button></form></section>`;
+          <button class="primary">Save</button></form></section>
+      ${coverPicker(d)}
+      <section class="panel" aria-labelledby="illoH"><h2 id="illoH">Pictures on help cards</h2><div id="illoState"><p class="note">Checking…</p></div></section>`;
     $("#settings").onsubmit = async (e) => {
       e.preventDefault();
-      try { await api(`/api/prof/courses/${c.id}/settings`, { method: "POST", body: { office_hours_url: $("#oh").value, tutoring_url: $("#tut").value, terms: $("#terms").value, art: document.querySelector("input[name=art]:checked")?.value || "" } }); toast("Saved."); }
+      try { await api(`/api/prof/courses/${c.id}/settings`, { method: "POST", body: { office_hours_url: $("#oh").value, tutoring_url: $("#tut").value, terms: $("#terms").value } }); toast("Saved."); }
       catch (err) { toast(err.message, "error"); }
     };
+    wireCover(d);
+    illoStatus();
+  }
+
+  // ---------- course cover gallery ----------
+  // Automatic, then each subject with its variants as thumbnails. Choosing one updates the preview of the
+  // real course card; nothing is saved until Save. The choice is stored on the course, so every student
+  // sees it; it has nothing to do with anyone's light or dark theme.
+  const subjectName = (d, art) => { const [s, v] = String(art).split("/"); const a = d.artChoices.find((x) => x.id === (s === "economics" ? "micro" : s)); return a ? `${a.label}, ${a.names[Number(v) || 0]}` : "General"; };
+  function coverPicker(d) {
+    const c = d.course;
+    const opt = (value, art, name, sub = "") => `<label class="cv-opt"><input type="radio" name="art" value="${esc(value)}"${(c.artChosen || "") === value ? " checked" : ""}>
+        <span class="cv-thumb">${Lost.courseArt(art, c.id)}<span class="cv-check" aria-hidden="true"></span></span>
+        <span class="cv-name">${esc(name)}${sub ? `<span class="note">${esc(sub)}</span>` : ""}</span></label>`;
+    return `<section class="panel cover-panel" aria-labelledby="coverH"><h2 id="coverH">Course cover</h2>
+      <p class="note">Decoration for the course card, drawn by Lost (no image service). Students see the cover you pick.</p>
+      <form id="coverForm" class="cover-layout">
+        <div class="cover-gallery">
+          <fieldset class="cv-group"><legend>Automatic</legend><div class="cv-row">${opt("", c.artAuto, "Pick for me", `Now: ${subjectName(d, c.artAuto)}`)}</div></fieldset>
+          ${d.artChoices.map((a) => `<fieldset class="cv-group"><legend>${esc(a.label)}</legend><div class="cv-row">${a.names.map((nm, i) => opt(`${a.id}/${i}`, `${a.id}/${i}`, nm)).join("")}</div></fieldset>`).join("")}
+        </div>
+        <div class="cover-side">
+          <p class="lesson-label">Preview of the course card</p>
+          <ul class="course-grid cv-preview" id="cvPrev" aria-live="polite"></ul>
+          <div class="row"><button class="primary" id="cvSave">Save cover</button><button type="button" id="cvCancel">Cancel</button></div>
+          <p class="note" id="cvState" role="status"></p>
+        </div>
+      </form></section>`;
+  }
+  function wireCover(d) {
+    const c = d.course;
+    let saved = c.artChosen || "";
+    const current = () => document.querySelector("#coverForm input[name=art]:checked")?.value ?? "";
+    const paint = () => {
+      const v = current(), art = v ? (v.includes("/") ? v : `${v}/0`) : c.artAuto;
+      $("#cvPrev").innerHTML = profCard({ ...c, art, sections: d.sections, active: null, recent: d.sessions.find((s) => s.status === "ended") || null, counts: d.counts }, { preview: true });
+      $("#cvState").textContent = v === saved ? "This is the saved cover." : `Not saved yet: ${v ? subjectName(d, v) : "automatic"}.`;
+    };
+    $("#coverForm").addEventListener("change", paint);
+    $("#cvCancel").onclick = () => { const r = [...document.querySelectorAll("#coverForm input[name=art]")].find((x) => x.value === saved); if (r) r.checked = true; paint(); };
+    $("#coverForm").onsubmit = async (e) => {
+      e.preventDefault();
+      const v = current();
+      try { await api(`/api/prof/courses/${c.id}/settings`, { method: "POST", body: { art: v } }); saved = v; c.artChosen = v; toast("Cover saved. Students see it on their course card."); paint(); }
+      catch (err) { toast(err.message, "error"); }
+    };
+    paint();
+  }
+  // Technical state of AI pictures: only shown here, never to students.
+  async function illoStatus() {
+    const el = $("#illoState");
+    try {
+      const r = await api("/api/prof/illustrations");
+      const STATE = { on: "On. Students can ask for a picture on help cards that have one.", off: "Off. IMAGE_GENERATION_ENABLED isn't true on this server.", missing_credentials: "Off. CLOUDFLARE_ACCOUNT_ID or CLOUDFLARE_API_TOKEN is missing on this server." };
+      el.innerHTML = `<p>${esc(STATE[r.state] || r.state)}</p>
+        <p class="note">Today: ${r.usedToday} of ${r.dailyMax} pictures (the cap covers every class on this server and resets at ${esc(r.resets)}). Pictures are drawn only when a student asks, and each one is kept and reused.</p>
+        ${r.failures.length ? `<p class="note">Failures in your courses in the last 7 days: ${r.failures.map((f) => `<code>${esc(f.error || "unknown")}</code> × ${f.n}`).join(", ")}.</p>` : ""}`;
+    } catch (e) { el.innerHTML = `<p class="note">${esc(e.message)}</p>`; }
   }
 
   // ================= live teaching screen =================
@@ -617,7 +820,7 @@
     [/^\/$/, dashboard],
     [/^\/onboarding$/, onboarding],
     [/^\/canvas$/, canvasPage],
-    [/^\/course\/([\w-]+)(?:\/(class|materials|history|settings))?$/, coursePage],
+    [/^\/course\/([\w-]+)(?:\/(class|lost|materials|history|settings))?$/, coursePage],
     [/^\/live\/([\w-]+)$/, liveScreen],
     [/^\/session\/([\w-]+)$/, reportPage],
   ]);

@@ -1,69 +1,109 @@
-// Student portal: classes, joining, the live "I'm lost" flow, and after-class summaries.
+// Student portal: the class list, and one workspace per course with a section rail on the left:
+// Overview, Live class, My lost moments, Practice, Class summary, Course materials.
 (function () {
-  const { $, $$, esc, fmt, when, ago, api, toast, safeUrl } = Lost;
+  const { $, $$, esc, fmt, when, api, toast, safeUrl } = Lost;
+  const day = (iso) => (iso ? new Date(iso).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) : "");
+  const dayTime = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "");
+  const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
   // Send a student straight into a class the moment it is live. Each live class is entered automatically
-  // once per browser tab, so pressing back to "Your classes" doesn't bounce them in again.
+  // once per browser tab, so going back to "Your classes" doesn't bounce them in again.
   const entered = (() => { try { return new Set(JSON.parse(sessionStorage.getItem("lost-entered") || "[]")); } catch { return new Set(); } })();
-  function enterLive(sid) {
+  function enterLive(sid, cid) {
     if (!sid || entered.has(sid)) return false;
     entered.add(sid);
     try { sessionStorage.setItem("lost-entered", JSON.stringify([...entered])); } catch {}
-    location.hash = `#/live/${sid}`;
+    location.hash = cid ? `#/course/${cid}/live` : `#/live/${sid}`;
     return true;
   }
 
-  // The left-hand dashboard: every class, one click each. Shown on the classes page and each course page.
-  Lost.dash = (courses, currentId, body) => `<div class="dash">
-    <nav class="dash-side" aria-label="Your classes">
-      <a class="dash-link ${currentId ? "" : "on"}" href="#/" ${currentId ? "" : 'aria-current="page"'}><span class="dash-code">All classes</span></a>
-      ${courses.map((c) => `<a class="dash-link ${c.id === currentId ? "on" : ""}" href="${c.active?.status === "live" ? `#/live/${c.active.id}` : `#/course/${c.id}`}" ${c.id === currentId ? 'aria-current="page"' : ""}>
-        <span class="dash-code">${esc(c.code)}${c.active?.status === "live" ? ` <span class="dot live" aria-label="live now"></span>` : ""}</span>
-        <span class="dash-name">${esc(c.name)}</span>
-        ${c.stats?.unresolved ? `<span class="dash-count" title="Open lost moments">${c.stats.unresolved}</span>` : ""}
-      </a>`).join("")}
-    </nav>
-    <div class="dash-main">${body}</div>
-  </div>`;
+  // Small line icons for the section rail (decorative; every link has a text label).
+  const ICON = {
+    overview: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+    live: '<circle cx="12" cy="12" r="2.5"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M4.9 4.9a10 10 0 0 0 0 14.2M19.1 4.9a10 10 0 0 1 0 14.2"/>',
+    moments: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
+    practice: '<rect x="3.5" y="3.5" width="17" height="17" rx="3"/><path d="m8 12 3 3 5-6"/>',
+    summary: '<path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 12h7M9 16h7"/>',
+    materials: '<path d="M4 5.5C4 4.7 4.7 4 5.5 4H10l2 2.5h6.5c.8 0 1.5.7 1.5 1.5v10.5c0 .8-.7 1.5-1.5 1.5h-13C4.7 20 4 19.3 4 18.5z"/>',
+  };
+  const icon = (k) => `<svg class="ws-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${ICON[k]}</svg>`;
 
-  // ================= home =================
+  // ================= home: every class =================
   async function home(app, _, params) {
     if (params.canvas) toast(params.canvas === "ok" ? "Canvas linked. Your classes are matched to your sections." : `Canvas: ${params.canvas}`, params.canvas === "ok" ? "" : "error");
-    const [{ courses, canvas }, st] = await Promise.all([api("/api/student/courses"), api("/api/canvas/status")]);
+    const { courses } = await api("/api/student/courses");
     const live = courses.filter((c) => c.active?.status === "live");
-    if (live.length === 1 && enterLive(live[0].active.id)) return;
+    if (live.length === 1 && enterLive(live[0].active.id, live[0].id)) return;
     Lost.poll(async (signal) => {
       const r = await api("/api/student/courses", { signal });
       const now = r.courses.filter((c) => c.active?.status === "live" && !entered.has(c.active.id));
-      if (now.length === 1) enterLive(now[0].active.id);
-      else if (now.length > 1 || r.courses.length !== courses.length) Lost.render();
+      if (now.length === 1) enterLive(now[0].active.id, now[0].id);
+      else if (now.length > 1 || r.courses.length !== courses.length || r.courses.filter((c) => c.active?.status === "live").length !== live.length) Lost.render();
     }, 3000);
-    app.innerHTML = Lost.dash(courses, "", `
-      <h1>Your classes</h1>
-      ${live.map((c) => `<a class="live-banner" href="#/live/${c.active.id}"><span class="dot live" aria-hidden="true"></span><span><b>${esc(c.code)} is live now</b><span>${esc(c.section_name)} · tap to enter today's class</span></span></a>`).join("")}
-      ${courses.length ? `<ul class="course-grid">${courses.map((c) => `
-        <li class="course-card">
-          ${Lost.courseArt ? Lost.courseArt(c.art, c.id) : ""}
-          <div class="cc-head"><span class="cc-code">${esc(c.code)}</span>${c.source === "demo" ? `<span class="badge warn">Demo course</span>` : ""}</div>
-          <h2><a href="#/course/${c.id}">${esc(c.name)}</a></h2>
-          ${c.active?.status === "live" ? `<p class="cc-line"><span class="badge live">Live now</span></p>` : ""}
-          ${c.recap?.idea ? `<div class="cc-recap"><span class="cc-label">Last time</span><p class="cc-idea">${esc(c.recap.idea)}</p></div>` : ""}
-          ${c.stats.total ? `<div class="cc-me" title="Lines you tapped in this course, and how many you've cleared">
-              <span class="cc-meter" aria-hidden="true"><i style="width:${Math.round(100 * c.stats.resolved / c.stats.total)}%"></i></span>
-              <span>${c.stats.resolved} of ${c.stats.total} cleared</span>
-            </div>` : ""}
-          ${c.active?.status === "live" ? `<a class="button gold" href="#/live/${c.active.id}">Enter today's class</a>` : c.stats.unresolved ? `<a class="button primary" href="#/course/${c.id}">Clear ${c.stats.unresolved} open</a>` : `<a class="button" href="#/course/${c.id}">Open course</a>`}
-        </li>`).join("")}</ul>` : `<div class="empty-state"><p>No classes yet. They show up here once your university connects them.</p></div>`}`);
-    const link = async (mode) => {
-      if (!st.institutionId) await api("/api/canvas/institution", { method: "POST", body: { institutionId: st.institutions[0].id } });
-      const r = await api("/api/canvas/connect", { method: "POST", body: { mode } });
-      if (r.redirect) { location.href = r.redirect; return; }
-      toast(r.added ? `Added you to ${r.added} section${r.added === 1 ? "" : "s"}.` : "No new sections matched. Your professor may not have added the course to Lost yet.");
-      Lost.render();
-    };
-    $("#oauth")?.addEventListener("click", () => link("oauth"));
-    $("#demoLink")?.addEventListener("click", () => link("demo"));
-    $("#relink")?.addEventListener("click", () => link(canvas.mode));
+    // Live classes first, then classes with open moments (most first), then the most recent class.
+    const rank = (c) => (c.active?.status === "live" ? 0 : c.stats.unresolved ? 1 : 2);
+    const sorted = [...courses].sort((a, b) => rank(a) - rank(b) || b.stats.unresolved - a.stats.unresolved
+      || String(b.last?.ended_at || "").localeCompare(String(a.last?.ended_at || "")) || String(a.code).localeCompare(String(b.code)));
+    const open = courses.reduce((n, c) => n + c.stats.unresolved, 0);
+    const h = new Date().getHours();
+    const hello = h < 5 ? "Up late" : h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+    const first = String(Lost.me?.name || "").trim().split(/\s+/)[0];
+    const topOpen = sorted.find((c) => c.stats.unresolved);
+    const sub = live.length ? "" : open ? `${plural(open, "moment")} still open${topOpen ? `, most in ${esc(topOpen.code)}` : ""}.`
+      : courses.length ? "Nothing open. You're caught up." : "";
+    // The centre box: a live class if there is one, otherwise a class code field.
+    const centre = live.length
+      ? live.map((c) => `<a class="home-live" href="#/course/${c.id}/live"><span class="dot live" aria-hidden="true"></span><span class="hl-text"><b>${esc(c.code)} is live now</b><span>${esc(c.name)}</span></span><span class="button gold">Enter class</span></a>`).join("")
+      : `<form class="home-join" id="homeJoin"><label for="joinCode">Class code</label>
+          <input id="joinCode" name="code" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="No Canvas yet? Enter a class code" maxlength="12">
+          <button class="button primary" type="submit">Join</button></form>`;
+    const side = courses.length ? `<nav class="ws-side home-side" aria-label="Your classes">
+        <a class="hs-home on" href="#/" aria-current="page">Home</a>
+        <p class="hs-head">Classes</p>
+        <ul class="hs-list">${sorted.map((c) => {
+          const isLive = c.active?.status === "live";
+          return `<li><a class="hs-link${isLive ? " is-live" : ""}" href="${isLive ? `#/course/${c.id}/live` : `#/course/${c.id}`}">
+            <span class="hs-art">${Lost.courseArt(c.art, c.id)}</span>
+            <span class="hs-text"><span class="hs-code">${esc(c.code)}</span><span class="hs-name">${esc(c.name)}</span></span>
+            ${isLive ? `<span class="hs-live"><span class="dot live" aria-hidden="true"></span><span class="visually-hidden">Live now</span></span>`
+              : c.stats.unresolved ? `<span class="ws-count" title="${plural(c.stats.unresolved, "open moment")}">${c.stats.unresolved}</span>` : ""}</a></li>`;
+        }).join("")}</ul></nav>` : "";
+    app.innerHTML = `<div class="ws home-ws">${side}<div class="ws-main home home2">
+      <div class="home-hero">
+        <h1 class="home-hello">${esc(hello)}${first ? `, ${esc(first)}` : ""}</h1>
+        ${centre}
+        ${sub ? `<p class="home-sub">${sub}</p>` : ""}
+        <aside class="home-hint" aria-label="How joining works with Canvas">
+          <span class="hh-tag">With Canvas</span>
+          <p>Once your university connects Lost to Canvas, your classes show up here on their own. No QR code and no class code. A class only opens while it is running, and only for students who are in the room.</p>
+        </aside>
+      </div>
+      ${courses.length ? `<section class="home-classes" aria-labelledby="hcTitle">
+          <div class="hc-head"><h2 id="hcTitle">Your classes</h2><span class="note">${plural(courses.length, "class", "classes")}</span></div>
+          <ul class="mini-grid">${sorted.map(courseCard).join("")}</ul></section>`
+        : `<p class="home-empty">Your classes show up here once your university connects them to Lost.</p>`}
+    </div></div>`;
+    $("#homeJoin")?.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const code = $("#joinCode").value.trim().toUpperCase();
+      if (code) location.hash = `#/join/${encodeURIComponent(code)}`;
+    });
+  }
+  // Small card: cover strip, code + status, name, last class in one short line.
+  function courseCard(c) {
+    const isLive = c.active?.status === "live";
+    const href = isLive ? `#/course/${c.id}/live` : c.stats.unresolved ? `#/course/${c.id}/moments` : `#/course/${c.id}`;
+    const status = isLive ? `<span class="mc-flag live"><span class="dot live" aria-hidden="true"></span>Live</span>`
+      : c.stats.unresolved ? `<span class="mc-flag open">${c.stats.unresolved} open</span>` : "";
+    const when = isLive ? "Class is on now" : c.last?.ended_at ? day(c.last.started_at || c.last.ended_at) : "No classes yet";
+    return `<li><a class="mini-card${isLive ? " is-live" : ""}" href="${href}">
+      <span class="mc-cover">${Lost.courseArt(c.art, c.id)}</span>
+      <span class="mc-body">
+        <span class="mc-top"><span class="cc-code">${esc(c.code)}</span>${status}</span>
+        <span class="mc-title">${esc(c.name)}</span>
+        ${c.recap?.idea ? `<span class="mc-recap">${esc(c.recap.idea)}</span>` : ""}
+        <span class="mc-meta">${esc(when)}${c.source === "demo" ? " · Demo" : ""}</span>
+      </span></a></li>`;
   }
 
   // ================= join =================
@@ -72,7 +112,7 @@
     let r;
     try { r = await api("/api/student/join", { method: "POST", body: { code } }); }
     catch (e) { app.innerHTML = `<h1>Couldn't join</h1><section class="panel"><p class="form-error">${esc(e.message)}</p><a class="button" href="#/">Back</a></section>`; return; }
-    if (r.activeSession) { entered.add(r.activeSession); location.replace(`#/live/${r.activeSession}`); return; }
+    if (r.activeSession) { entered.add(r.activeSession); location.replace(`#/course/${r.course.id}/live`); return; }
     app.innerHTML = `<h1>You're in ${esc(r.course.code)}</h1>
       <section class="panel waiting">
         <p><span class="dot live" aria-hidden="true"></span> <b>Waiting for class to start.</b></p>
@@ -80,53 +120,498 @@
       </section>`;
     Lost.poll(async (signal) => {
       const d = await api(`/api/student/courses/${r.course.id}`, { signal });
-      if (d.active?.status === "live") { entered.add(d.active.id); location.replace(`#/live/${d.active.id}`); }
+      if (d.active?.status === "live") { entered.add(d.active.id); location.replace(`#/course/${r.course.id}/live`); }
     }, 2500);
   }
 
-  // ================= course =================
-  const catName = (k) => ({ term: "A term", reasoning: "A reasoning step", connection: "A connection", missed: "Missed what was said" }[k] || "");
-  async function course(app, [id]) {
-    const [d, { courses: all }] = await Promise.all([api(`/api/student/courses/${id}`), api("/api/student/courses")]);
-    if (d.active?.status === "live" && enterLive(d.active.id)) return;
-    if (!d.active) Lost.poll(async (signal) => {
-      const n = await api(`/api/student/courses/${id}`, { signal });
-      if (n.active?.status === "live") enterLive(n.active.id) || Lost.render();
-    }, 3000);
-    const c = d.course;
-    // Only the lost history: each moment shows the line it happened on, then the help card that
-    // explains it (with its diagram or picture). Open moments come first.
-    const moments = [...d.history].sort((a, b) => (a.self_status === "resolved") - (b.self_status === "resolved"));
-    app.innerHTML = Lost.dash(all, c.id, `
-      <h1>${esc(c.code)} ${esc(c.name)}</h1>
-      ${d.active ? `<a class="live-banner" href="#/live/${d.active.id}"><span class="dot live" aria-hidden="true"></span><span><b>Class is live</b><span>Enter today's class</span></span></a>` : ""}
-      <h2 class="lost-h">Where you got lost</h2>
-      ${moments.length ? `<ol class="lost-list">${moments.map((h) => `
-        <li class="lost-item ${h.self_status === "resolved" ? "done" : "open"}">
-          <div class="lost-where">
-            <p class="lost-meta"><span class="lost-state">${h.self_status === "resolved" ? "Cleared" : "Still open"}</span>
-              <a href="#/session/${h.session_id}#ev-${h.id}">${when(h.started_at)} at ${fmt(h.t)}</a></p>
-            <blockquote class="lost-line">${esc(h.line || h.interim_text || "A moment with no line caught")}</blockquote>
-            ${h.topic ? `<p class="lost-q">${esc(h.topic)}</p>` : ""}
-          </div>
-          <div class="lost-help">${h.card ? Lost.lesson(h.card.payload, { headingLevel: 3, helpId: h.card.id })
-            : `<p class="note">No explanation was made for this one. <a href="#/session/${h.session_id}#ev-${h.id}">Open the class</a> to see what was said around it.</p>`}</div>
-        </li>`).join("")}</ol>`
-      : `<div class="empty-state"><p>Nothing yet. When you tap a line in class, it lands here with a picture that explains it.</p></div>`}`);
+  // Old links (notifications, bookmarks) still work: they land in the right workspace section.
+  async function liveLink(app, [sid]) {
+    const d = await api(`/api/student/sessions/${sid}/live`);
+    location.replace(d.status === "live" || d.status === "ending" ? `#/course/${d.course.id}/live` : `#/course/${d.course.id}/summary?s=${sid}`);
+  }
+  async function sessionLink(app, [sid, ev]) {
+    const d = await api(`/api/student/sessions/${sid}`);
+    const cid = d.session.course_id;
+    location.replace(d.session.status === "live" ? `#/course/${cid}/live` : ev ? `#/course/${cid}/moments/${ev}` : `#/course/${cid}/summary?s=${sid}`);
+  }
+
+  // ================= course workspace =================
+  const LABEL = { overview: "Overview", live: "Live class", moments: "My lost moments", practice: "Practice", summary: "Class summary", materials: "Course materials" };
+  const SHORT = { overview: "Overview", live: "Live", moments: "Moments", practice: "Practice", summary: "Summary", materials: "Materials" };
+  const TABS = [["explain", "Explanation"], ["context", "Context & diagram"], ["check", "Check understanding"], ["sources", "Sources"]];
+  const isResolved = (h) => h.self_status === "resolved" || h.status === "resolved";
+  const stateOf = (h) => (h.checkPassed ? "check" : isResolved(h) ? "understood" : "open");
+  const STATE = { open: ["Unresolved", "st-open"], understood: ["You said you got it", "st-ok"], check: ["Check passed", "st-check"] };
+  const stateChip = (h) => { const [t, c] = STATE[stateOf(h)]; return `<span class="mm-state ${c}"><span class="st-mark" aria-hidden="true"></span>${t}</span>`; };
+
+  async function workspace(app, args, params) {
+    const W = { id: args[0], section: "", live: null, sc: null, sel: params.s || "", quiz: {}, drafts: {}, ev: new Map(), flash: null, mmFilter: "all", lastLine: "" };
+    const load = async () => {
+      const [d, { courses }] = await Promise.all([api(`/api/student/courses/${W.id}`), api("/api/student/courses")]);
+      W.d = d; W.all = courses; W.me = courses.find((c) => c.id === W.id) || {};
+    };
+    await load();
+    const c = W.d.course;
+    app.innerHTML = `<div class="ws">
+        <nav class="ws-side" id="wsNav" aria-label="${esc(c.code)} sections"></nav>
+        <div class="ws-main">
+          <div id="wsNow" class="classnow" hidden></div>
+          <div id="wsLive" hidden></div>
+          <div id="wsSection"></div>
+        </div>
+      </div>`;
+    Lost.keep(W.id, (a, p) => show(a, p));
+    Lost.onLeave(() => { W.sc?.dispose(); W.live?.destroy(); W.live = null; });
+
+    // Keep counts and the live state fresh without redrawing the section the student is reading.
+    let first = true;
+    Lost.poll(async (signal) => {
+      if (first) { first = false; return; }
+      const before = W.d.active?.id || "";
+      const d = await api(`/api/student/courses/${W.id}`, { signal });
+      W.d = d;
+      const now = d.active?.id || "";
+      if (now !== before) {
+        ensureLive();
+        if (d.active?.status === "live" && enterLive(d.active.id, W.id)) return;
+      }
+      paintNav();
+    }, 10000);
+
+    const sections = () => {
+      const d = W.d, hasEnded = d.sessions.some((s) => s.status === "ended");
+      return ["overview", d.active || W.live ? "live" : "", d.history.length ? "moments" : "", d.history.length || hasEnded ? "practice" : "",
+        hasEnded ? "summary" : "", d.materials.length || safeUrl(d.course.office_hours_url) || safeUrl(d.course.tutoring_url) ? "materials" : ""].filter(Boolean);
+    };
+    const endedSessions = () => W.d.sessions.filter((s) => s.status === "ended");
+    const selSession = () => W.sel && W.d.sessions.some((s) => s.id === W.sel) ? W.sel : endedSessions()[0]?.id || "";
+    const href = (k) => `#/course/${W.id}${k === "overview" ? "" : `/${k}`}${k === "summary" && selSession() ? `?s=${selSession()}` : ""}`;
+
+    function paintNav() {
+      const d = W.d, open = d.history.filter((h) => !isResolved(h)).length;
+      const sub = {
+        live: W.liveStatus === "ended" ? "Class ended" : d.active ? "Live now" : "",
+        moments: d.history.length ? (open ? `${open} unresolved` : "All cleared") : "",
+        summary: selSession() ? day(W.d.sessions.find((s) => s.id === selSession())?.started_at) : "",
+        materials: d.materials.length ? plural(d.materials.length, "item") : "Help links",
+      };
+      $("#wsNav").innerHTML = `
+        <a class="ws-back" href="#/"><span aria-hidden="true">←</span> All classes</a>
+        <div class="ws-course">${Lost.courseArt(c.art, c.id)}<p><span class="cc-code">${esc(c.code)}</span><span class="ws-cname">${esc(c.name)}</span></p></div>
+        <ul class="ws-links" style="--cols:${sections().length <= 4 ? sections().length : 3}">${sections().map((k) => `<li><a class="ws-link${k === W.section ? " on" : ""}${k === "live" && d.active ? " is-live" : ""}" href="${href(k)}"${k === W.section ? ' aria-current="page"' : ""}>
+          ${icon(k)}<span class="ws-label"><span class="ws-long">${LABEL[k]}</span><span class="ws-short" aria-hidden="true">${SHORT[k]}</span>${sub[k] ? `<span class="ws-sub">${k === "live" && d.active ? '<span class="dot live" aria-hidden="true"></span> ' : ""}${esc(sub[k])}</span>` : ""}</span>
+          ${k === "moments" && open ? `<span class="ws-count" aria-hidden="true">${open}</span>` : ""}</a></li>`).join("")}</ul>`;
+    }
+
+    // The live class is mounted once and only hidden while the student reads another section.
+    function ensureLive() {
+      const a = W.d.active;
+      if (W.live && (!a || W.live.sid !== a.id) && W.liveStatus !== "ended") { /* keep an ended class on screen until they leave */ }
+      if (!a || (W.live && W.live.sid === a.id)) return;
+      W.live?.destroy();
+      W.liveStatus = "";
+      W.live = mountLive($("#wsLive"), a.id, { courseId: W.id, onUpdate: onLive });
+    }
+    let mineN = -1;
+    function onLive(u) {
+      W.lastLine = u.last; W.liveStatus = u.status;
+      if (u.mine.length !== mineN) {
+        if (mineN !== -1) load().then(paintNav).catch(() => {});
+        mineN = u.mine.length;
+      }
+      paintNow();
+    }
+    // "Class now": while class is live and the student is in another section, the newest line and a way back.
+    function paintNow() {
+      const el = $("#wsNow"), on = !!W.live && W.liveStatus === "live" && W.section !== "live";
+      el.hidden = !on;
+      if (!on) return;
+      el.innerHTML = `<span class="cn-k"><span class="dot live" aria-hidden="true"></span> Class now</span>
+        <span class="cn-line">${W.lastLine ? esc(W.lastLine) : "Listening…"}</span>
+        <a class="button gold cn-btn" href="#/course/${W.id}/live">Return to live</a>`;
+    }
+
+    async function show(a, params = {}) {
+      let [, section = "overview", x, y] = a;
+      if (params.s) W.sel = params.s;
+      ensureLive();
+      if (!sections().includes(section)) { location.replace(`#/course/${W.id}`); return; }
+      // A live class is entered once per tab; after that, Overview is where the course opens.
+      if (section === "overview" && W.d.active?.status === "live" && !W.section && enterLive(W.d.active.id, W.id)) return;
+      const same = W.section === section;
+      W.section = section;
+      paintNav(); paintNow();
+      $("#wsLive").hidden = section !== "live";
+      $("#wsSection").hidden = section === "live";
+      if (section === "live") { document.title = `${c.code} live · Lost`; W.live?.focus(); window.scrollTo(0, 0); return; }
+      if (!(same && section === "moments")) { W.sc?.dispose(); W.sc = Lost.scope(); }
+      // While class is live, help cards and topics arrive after the tap: reload before drawing a new section.
+      if (W.live && !same) { try { await load(); W.ev.clear(); paintNav(); } catch {} }
+      const el = $("#wsSection");
+      await SECT[section](el, x, y, same);
+      if (!(same && section === "moments")) {
+        const h1 = el.querySelector("h1");
+        if (h1) { h1.tabIndex = -1; h1.focus({ preventScroll: true }); document.title = `${h1.textContent} · ${c.code} · Lost`; }
+        window.scrollTo(0, 0);
+      }
+    }
+
+    // ---------- overview ----------
+    function overview(el) {
+      const d = W.d, s = d.stats, open = d.history.filter((h) => !isResolved(h));
+      const last = endedSessions()[0];
+      el.innerHTML = `
+        <header class="ov-head">
+          <div class="ov-cover">${Lost.courseArt(c.art, c.id)}</div>
+          <div class="ov-title"><p class="cc-code">${esc(c.code)}${c.section ? ` · ${esc(c.section)}` : ""}${c.term ? ` · ${esc(c.term)}` : ""}</p><h1>${esc(c.name)}</h1></div>
+        </header>
+        ${d.active ? `<a class="live-banner" href="#/course/${W.id}/live"><span class="dot live" aria-hidden="true"></span><span><b>Class is live now</b><span>Enter the live class</span></span></a>` : ""}
+        <dl class="ov-stats">
+          <div><dt>Unresolved moments</dt><dd>${open.length ? `<a href="#/course/${W.id}/moments">${open.length}</a>` : "0"}</dd></div>
+          <div><dt>You said you got it</dt><dd>${s.resolved}</dd></div>
+          <div><dt>Practice checks passed</dt><dd>${s.checksPassed}${s.checksAnswered ? `<span class="of"> of ${s.checksAnswered}</span>` : ""}</dd></div>
+          <div><dt>Last class</dt><dd class="dd-date">${last ? esc(day(last.started_at)) : "None yet"}</dd></div>
+        </dl>
+        <div class="ov-grid">
+          <section class="ov-block" aria-labelledby="ovOpen"><h2 id="ovOpen">Still open</h2>
+            ${open.length ? `<ul class="ov-open">${open.slice(0, 4).map((h) => `<li><a href="#/course/${W.id}/moments/${h.id}"><span class="ov-o-t">${esc(h.topic || h.line || "Your moment")}</span><span class="note">${esc(day(h.started_at))} at ${fmt(h.t)}</span></a></li>`).join("")}</ul>
+              ${open.length > 4 ? `<p><a href="#/course/${W.id}/moments">All ${open.length} open moments</a></p>` : ""}`
+              : `<p class="empty-line">${d.history.length ? "Nothing open. Every moment you marked is cleared." : "No lost moments yet. When a line loses you in class, tap it and it lands here."}</p>`}
+          </section>
+          <section class="ov-block" aria-labelledby="ovLast"><h2 id="ovLast">Last time</h2>
+            ${W.me.recap?.idea ? `<p class="ov-recap">${esc(W.me.recap.idea)}</p><p><a href="#/course/${W.id}/summary?s=${last?.id || ""}">Read the class summary</a></p>`
+              : `<p class="empty-line">${last ? "The summary for the last class isn't published yet." : "No class has finished yet."}</p>`}
+          </section>
+        </div>
+        <section class="ov-block" aria-labelledby="ovClasses"><h2 id="ovClasses">Classes</h2>
+          ${d.sessions.length ? `<ol class="sess-list">${d.sessions.map((x) => sessRow(x)).join("")}</ol>` : `<p class="empty-line">No classes yet. When your professor starts one, it shows here and you go in by yourself.</p>`}
+        </section>`;
+    }
+    const sumWord = (x) => x.summary === "ready" && x.published ? "Summary ready" : x.summary === "ready" ? "Summary not shared yet" : x.summary === "transcript_only" ? "Transcript only" : x.summary === "failed" ? "No summary" : "Summary being written";
+    const sessRow = (x) => {
+      const live = x.status === "live" || x.status === "ending";
+      return `<li class="${live ? "is-live" : ""}"><a href="${live ? `#/course/${W.id}/live` : `#/course/${W.id}/summary?s=${x.id}`}">
+        <span class="sess-date">${esc(dayTime(x.started_at))}</span>
+        <span class="sess-st">${live ? `<span class="badge live">Live now</span>` : esc(sumWord(x))}</span>
+        <span class="sess-me note">${x.my_taps ? `You marked ${x.my_taps}` : ""}</span></a></li>`;
+    };
+
+    // ---------- my lost moments: list + one moment's detail ----------
+    async function moments(el, evId, tab = "explain", same = false) {
+      const d = W.d;
+      if (!TABS.some(([k]) => k === tab)) tab = "explain";
+      const list = [...d.history].sort((a, b) => (isResolved(a) - isResolved(b)) || String(b.started_at).localeCompare(String(a.started_at)) || b.t - a.t);
+      const shown = list.filter((h) => W.mmFilter === "all" || (W.mmFilter === "open" ? !isResolved(h) : isResolved(h)));
+      const open = list.filter((h) => !isResolved(h)).length;
+      const countText = `${open ? `${plural(open, "unresolved moment")} · ` : ""}${plural(list.length, "moment")} in total. Only you see these.`;
+      const item = (h) => `<li><a class="mm-item${h.id === evId ? " on" : ""}" href="#/course/${W.id}/moments/${h.id}"${h.id === evId ? ' aria-current="true"' : ""}>
+          <span class="mm-top">${stateChip(h)}<time>${esc(day(h.started_at))} · ${fmt(h.t)}</time></span>
+          <span class="mm-topic">${esc(h.topic || h.line || h.interim_text || "Your moment")}</span>
+          <span class="mm-prev">${esc(preview(h))}</span></a></li>`;
+      if (!same || !$("#mmList")) {
+        el.innerHTML = `<div class="mm-headrow"><h1>My lost moments</h1>
+            <p class="note" id="mmCount">${countText}</p></div>
+          <div class="mm-filter" role="group" aria-label="Show">${[["all", "All"], ["open", "Unresolved"], ["done", "Understood"]].map(([k, t]) => `<button type="button" data-f="${k}" aria-pressed="${W.mmFilter === k}">${t}</button>`).join("")}</div>
+          <div class="mm${evId ? " has-detail" : ""}">
+            <ol class="mm-list" id="mmList" aria-label="Your moments">${shown.map(item).join("") || `<li class="empty-line">Nothing here.</li>`}</ol>
+            <section class="mm-detail" id="mmDetail" aria-label="Moment detail"></section>
+          </div>`;
+        el.querySelector(".mm-filter").addEventListener("click", (e) => {
+          const b = e.target.closest("button[data-f]"); if (!b) return;
+          W.mmFilter = b.dataset.f; moments(el, evId, tab, false);
+        });
+      } else {
+        // Same section: redraw only the list (states may have changed) and keep its scroll position.
+        const ol = $("#mmList"), top = ol.scrollTop;
+        ol.innerHTML = shown.map(item).join("") || `<li class="empty-line">Nothing here.</li>`;
+        ol.scrollTop = top;
+        $("#mmCount").textContent = countText;
+        el.querySelector(".mm").classList.toggle("has-detail", !!evId);
+      }
+      const box = $("#mmDetail");
+      if (!evId) { box.innerHTML = `<p class="mm-pick">Pick a moment to see its explanation, the context it came from, a practice question and its sources.</p>`; return; }
+      const h = list.find((x) => x.id === evId);
+      if (!h) { box.innerHTML = `<p class="empty-line">That moment isn't in this course.</p>`; return; }
+      const prevTab = box.dataset.ev === evId ? box.dataset.tab : "";
+      if (!W.ev.has(evId)) { box.innerHTML = `<p class="note loading">Loading…</p>`; W.ev.set(evId, await api(`/api/student/events/${evId}`)); }
+      paintDetail(box, h, W.ev.get(evId), tab);
+      box.dataset.ev = evId; box.dataset.tab = tab;
+      if (prevTab && prevTab !== tab) $(`#tab-${tab}`)?.focus();
+      else { $("#mmH")?.focus({ preventScroll: matchMedia("(min-width: 1000px)").matches }); if (!matchMedia("(min-width: 1000px)").matches) box.scrollIntoView({ block: "start" }); }
+      document.title = `${h.topic || "Your moment"} · ${c.code} · Lost`;
+    }
+    const preview = (h) => {
+      const p = h.card?.payload;
+      return p?.takeaway?.text || p?.explanation?.text || (h.topic ? h.line || "" : "No explanation yet");
+    };
+
+    function paintDetail(box, h, dt, tab) {
+      const base = `#/course/${W.id}/moments/${h.id}`;
+      const cards = dt.cards.filter((k) => k.payload);
+      const main = cards.find((k) => k.kind === "explain") || cards[0] || null;
+      const parts = main && main.payload.ai !== false ? Lost.lessonParts(main.payload, { helpId: main.id, headingLevel: 3, showTitle: false }) : null;
+      box.innerHTML = `
+        <a class="mm-back" href="#/course/${W.id}/moments">All moments</a>
+        <div class="mm-sticky">
+          <p class="mm-meta">${stateChip({ ...h, self_status: dt.event.status, checkPassed: dt.checkPassed })}<span>Class on ${esc(day(dt.session?.started_at))} at ${fmt(dt.event.t)}</span></p>
+          <h2 id="mmH" tabindex="-1">${esc(dt.event.topic || "Your moment")}</h2>
+          <div class="mm-tabs" role="tablist" aria-label="Review this moment">${TABS.map(([k, t]) => `<a role="tab" id="tab-${k}" href="${base}/${k}" aria-selected="${k === tab}" aria-controls="mmPanel" tabindex="${k === tab ? 0 : -1}">${t}</a>`).join("")}</div>
+        </div>
+        ${dt.line ? `<blockquote class="lost-line"><span class="visually-hidden">The line you marked: </span>"${esc(dt.line.text)}"</blockquote>` : dt.event.interim ? `<blockquote class="lost-line">"${esc(dt.event.interim)}…" <span class="note">(half-heard)</span></blockquote>` : ""}
+        <div class="mm-panel" role="tabpanel" id="mmPanel" aria-labelledby="tab-${tab}" tabindex="0">${PANEL[tab](h, dt, main, parts, cards)}</div>`;
+      // Tabs: arrow keys move between them (and open them), like any tab list.
+      box.querySelector(".mm-tabs").addEventListener("keydown", (e) => {
+        const tabs = $$('.mm-tabs [role="tab"]'), i = tabs.indexOf(document.activeElement);
+        const j = e.key === "ArrowRight" ? i + 1 : e.key === "ArrowLeft" ? i - 1 : e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1 : null;
+        if (j == null || i < 0) return;
+        e.preventDefault();
+        const t = tabs[(j + tabs.length) % tabs.length];
+        location.replace(t.getAttribute("href"));
+      });
+      box.querySelectorAll('.mm-tabs [role="tab"]').forEach((t) => t.addEventListener("click", (e) => { e.preventDefault(); location.replace(t.getAttribute("href")); }));
+      wireDetail(box, h, dt);
+    }
+
+    const PANEL = {
+      explain: (h, dt, main, parts, cards) => {
+        if (!main) return `<p>No explanation was made for this moment yet.</p><button class="primary" data-do="explain">Get an explanation</button><p class="note">It uses what was said around your tap and the course notes.</p>`;
+        if (!parts) return `<p class="note">${esc(main.payload.reason === "off" ? "The AI helper was off for this one." : "The AI helper couldn't answer this one.")} Here's what was transcribed and what the notes say.</p>
+          ${main.payload.passages?.length ? `<div class="excerpt"><span class="label">From course materials</span>${main.payload.passages.map((x) => `<p><b>${esc(x.title)}</b>${x.location ? `, ${esc(x.location)}` : ""}<br>${esc(x.text)}</p>`).join("")}</div>` : ""}`;
+        const others = cards.filter((k) => k !== main && k.payload.ai !== false);
+        const KIND = { retry: "Another way you saw it", simpler: "The simpler version", prereq: "The idea underneath", steps: "The steps" };
+        return `<div class="lesson tab-lesson">${parts.explain}${parts.rule}${parts.example}
+            ${parts.more ? `<details class="lesson-more"><summary>Explain more</summary><div class="lesson-more-body">${parts.more}</div></details>` : ""}</div>
+          ${others.map((k) => `<details class="mm-other"><summary>${KIND[k.kind] || "Another explanation"}</summary>${Lost.lesson(k.payload, { headingLevel: 4, helpId: k.id })}</details>`).join("")}
+          <p class="mm-next"><a href="#/course/${W.id}/moments/${h.id}/check">Check you've got it</a></p>`;
+      },
+      context: (h, dt, main, parts) => `
+        ${dt.context.length ? `<figure class="ctx"><figcaption>What was said around your moment</figcaption><ol class="ctx-lines">${dt.context.map((l) => `<li class="${l.idx === dt.line?.idx ? "mine" : ""}"><time>${fmt(l.t)}</time><span>${esc(l.text)}</span>${l.idx === dt.line?.idx ? '<span class="visually-hidden"> (the line you marked)</span>' : ""}</li>`).join("")}</ol></figure>`
+          : `<p class="note">No transcript was caught near this moment.</p>`}
+        ${parts?.connection || ""}
+        ${parts?.visual || ""}
+        ${parts ? (parts.p.illustration ? parts.illustration() : `<p class="note illo-none">${parts.visual ? "No AI picture for this one: the diagram shows it better than a drawing would." : "No diagram or picture for this one: the explanation covers it in words."}</p>`) : ""}`,
+      check: (h, dt) => {
+        const st = dt.event.status;
+        const done = dt.checks.filter((k) => k.chosen != null || k.skipped);
+        const pending = dt.checks.filter((k) => k.chosen == null && !k.skipped);
+        const draft = W.drafts[h.id] ?? dt.officeHours ?? ohDraft(h, dt);
+        return `<section class="chk-status" aria-labelledby="chkS"><h3 id="chkS">Where you are</h3>
+            <p>${st === "resolved" ? "You said you've got this one." : st === "still" ? "You said you're still unsure." : "You haven't said yet whether this makes sense."} ${dt.checkPassed ? "You also answered a practice question on it correctly." : ""}</p>
+            <p class="note">Only these buttons change it. Reading, closing or switching tabs never marks a moment understood.</p>
+            <div class="row">${st === "resolved" ? `<button data-do="still">I'm unsure again</button>` : `<button class="primary" data-do="resolved">I get it now</button>${st !== "still" ? `<button data-do="still">Still unsure</button>` : ""}`}</div>
+          </section>
+          <section aria-labelledby="chkQ"><h3 id="chkQ">Practice question</h3>
+            ${done.map((k) => checkDone(k)).join("")}
+            ${pending.map((k) => checkForm(k)).join("")}
+            ${dt.checks.filter((k) => k.kind === "comprehension").length < 3 ? `<button data-do="newcheck">${done.length || pending.length ? "Another question" : "Try a question"}</button><p class="note">A new example on the same idea, written by the AI. Not graded.</p>` : `<p class="note">That's three questions for this moment.</p>`}
+          </section>
+          ${!isResolved({ self_status: st }) ? `<details class="oh"${W.drafts[h.id] != null ? " open" : ""}><summary>Prepare an office-hours question</summary>
+            <label for="oh-${h.id}">Edit it before you use it. Lost doesn't send it to anyone.</label><textarea id="oh-${h.id}" rows="5">${esc(draft)}</textarea>
+            <div class="row"><button data-do="oh">Save</button><button data-do="copy">Copy</button></div></details>` : ""}`;
+      },
+      sources: (h, dt, main, parts, cards) => `
+        ${cards.filter((k) => k.payload.ai !== false).map((k, i) => { const x = Lost.lessonParts(k.payload, { helpId: k.id }); return `${cards.length > 1 ? `<h3>${i === 0 ? "First explanation" : `Explanation ${i + 1}`}</h3>` : ""}${x.sourcesHtml}`; }).join("") || `<p class="note">No explanation, so no sources yet.</p>`}
+        ${dt.session ? `<p><a href="#/course/${W.id}/summary?s=${dt.session.id}">The class summary for ${esc(day(dt.session.started_at))}</a></p>` : ""}`,
+    };
+    const checkDone = (k) => `<div class="chk-done"><p class="chk-q">${esc(k.question)}</p>${k.skipped ? `<p class="note">Skipped.</p>` : `<p><span class="badge ${k.correct ? "good" : "warn"}">${k.correct ? "Right" : "Not quite"}</span> You chose "${esc(k.choices[k.chosen])}". ${k.correct ? "" : `The answer: "${esc(k.choices[k.correctIndex])}".`} ${esc(k.why || "")}</p>`}</div>`;
+    const checkForm = (k) => `<form class="check" data-check="${k.id}"><fieldset><legend>${k.kind === "diagnostic" ? "Quick check on the idea underneath: " : ""}${esc(k.question)}</legend>
+        ${k.choices.map((ch, i) => `<label class="choice"><input type="radio" name="c-${k.id}" value="${i}"> ${esc(ch)}</label>`).join("")}</fieldset>
+        <div class="row"><button class="primary">Answer</button></div><p class="check-result" aria-live="polite"></p></form>`;
+    function ohDraft(h, dt) {
+      const card = dt.cards.find((k) => k.payload?.v === 2)?.payload;
+      const src = card ? [card.takeaway, card.explanation, card.connection].filter(Boolean).flatMap((x) => x.sources || []).find((x) => x.type === "passage") : null;
+      return `I got lost at ${fmt(dt.event.t)} in the ${when(dt.session?.started_at)} class${dt.event.topic ? `, on ${dt.event.topic}` : ""}.${dt.line ? ` You said: "${dt.line.text}"` : ""}${src ? ` The related material is ${src.title}${src.location ? `, ${src.location}` : ""}.` : ""}${dt.event.question ? ` My question: ${dt.event.question}` : " What I still don't get is: "}`;
+    }
+    function wireDetail(box, h, dt) {
+      const refresh = async () => { W.ev.set(h.id, await api(`/api/student/events/${h.id}`)); await load(); paintNav(); };
+      box.querySelector(`#oh-${h.id}`)?.addEventListener("input", (e) => { W.drafts[h.id] = e.target.value; });
+      box.onclick = async (e) => {
+        const b = e.target.closest("button[data-do]"); if (!b) return;
+        const act = b.dataset.do;
+        if (act === "resolved" || act === "still") {
+          b.disabled = true;
+          try { await api(`/api/student/events/${h.id}/status`, { method: "POST", body: { status: act } }); await refresh(); toast(act === "resolved" ? "Marked as understood." : "Kept open."); }
+          catch (x) { toast(x.message, "error"); }
+          return moments($("#wsSection"), h.id, "check", true);
+        }
+        if (act === "newcheck") {
+          b.disabled = true; b.textContent = "Writing a question…";
+          try { await api(`/api/student/events/${h.id}/check`, { method: "POST" }); await refresh(); } catch (x) { toast(x.message, "error"); }
+          return moments($("#wsSection"), h.id, "check", true);
+        }
+        if (act === "explain") {
+          b.disabled = true; b.textContent = "Explaining…";
+          try { await api(`/api/student/events/${h.id}/help`, { method: "POST", body: { kind: "explain", anchor: "current" } }); await refresh(); } catch (x) { toast(x.message, "error"); }
+          return moments($("#wsSection"), h.id, "explain", true);
+        }
+        if (act === "oh") { const ta = $(`#oh-${h.id}`); try { await api(`/api/student/events/${h.id}/office-hours`, { method: "POST", body: { text: ta.value } }); dt.officeHours = ta.value; toast("Saved. Lost doesn't send it anywhere."); } catch (x) { toast(x.message, "error"); } }
+        if (act === "copy") { const ta = $(`#oh-${h.id}`); try { await navigator.clipboard.writeText(ta.value); toast("Copied."); } catch { ta.select(); toast("Select and copy the text."); } }
+      };
+      box.onsubmit = async (e) => {
+        const f = e.target.closest("form.check"); if (!f) return;
+        e.preventDefault();
+        const chosen = f.querySelector("input:checked"); if (!chosen) { f.querySelector(".check-result").textContent = "Pick an answer first."; return; }
+        try { await api(`/api/student/checks/${f.dataset.check}/answer`, { method: "POST", body: { chosen: Number(chosen.value) } }); await refresh(); }
+        catch (x) { f.querySelector(".check-result").textContent = x.message; return; }
+        moments($("#wsSection"), h.id, "check", true);
+      };
+    }
+
+    // ---------- practice: a quiz per class, and this course's flash cards ----------
+    async function practice(el) {
+      const withTaps = W.d.sessions.filter((s) => s.my_taps && s.status !== "ready");
+      const sid = withTaps.some((s) => s.id === W.sel) ? W.sel : withTaps[0]?.id || "";
+      el.innerHTML = `<h1>Practice</h1>
+        <div class="pr-grid">
+          <section class="panel" aria-labelledby="qzH"><h2 id="qzH">Quiz on your lost moments</h2>
+            ${withTaps.length ? `<div class="pick-row"><label for="qzS">Class</label><select id="qzS">${withTaps.map((s) => `<option value="${s.id}"${s.id === sid ? " selected" : ""}>${esc(dayTime(s.started_at))} (${plural(s.my_taps, "moment")})</option>`).join("")}</select></div>
+              <div id="quizBox"></div>` : `<p class="empty-line">No moments to practise yet. After you tap a line in class, questions on it show up here.</p>`}
+          </section>
+          <section class="panel" aria-labelledby="fcH"><h2 id="fcH">Flash cards</h2><div id="fcBox"><p class="note loading">Loading…</p></div></section>
+        </div>`;
+      if (sid) {
+        const paintQuiz = (sidNow) => {
+          const q = W.quiz[sidNow], box = $("#quizBox");
+          if (!q) {
+            box.innerHTML = `<p class="note">Up to 3 questions on the spots you marked in this class, each with a new example. Not a grade, and it doesn't change what you marked as understood.</p><button class="primary" id="startQuiz">Start the quiz</button>`;
+            $("#startQuiz").onclick = async (e) => {
+              e.target.disabled = true; e.target.textContent = "Writing questions…";
+              const s = await api(`/api/student/sessions/${sidNow}`);
+              const pick = [...s.events.filter((x) => x.status !== "resolved"), ...s.events.filter((x) => x.status === "resolved")].slice(0, 3);
+              const qs = [];
+              for (const ev of pick) { try { qs.push({ ev, q: await api(`/api/student/events/${ev.id}/check`, { method: "POST" }) }); } catch (x) { qs.push({ ev, err: x.message }); } }
+              W.quiz[sidNow] = { qs, results: {} };
+              if (W.section === "practice") paintQuiz(sidNow);
+            };
+            return;
+          }
+          box.innerHTML = q.qs.map(({ ev, q: k, err }, i) => err ? `<p class="note">Question ${i + 1} (${esc(ev.topic || fmt(ev.t))}): ${esc(err)}</p>` : quizForm(k, ev, i, q.results[k.id])).join("") + `<p class="note">New examples written by the AI.</p>`;
+        };
+        const quizForm = (k, ev, i, r) => `<form class="check" data-check="${k.id}"><fieldset${r ? " disabled" : ""}><legend><span class="lesson-label">${i + 1} · ${esc(ev.topic || `the spot at ${fmt(ev.t)}`)}</span><br>${esc(k.question)}</legend>
+            ${k.choices.map((ch, j) => `<label class="choice${r ? (j === r.correctIndex ? " right" : j === r.chosen ? " wrong" : "") : ""}"><input type="radio" name="q-${k.id}" value="${j}"${r?.chosen === j ? " checked" : ""}> ${esc(ch)}</label>`).join("")}</fieldset>
+            ${r ? "" : `<button class="primary">Answer</button>`}<p class="check-result" aria-live="polite">${r ? `<b>${r.correct ? "Right." : "Not quite."}</b> ${esc(r.why || "")}` : ""}</p></form>`;
+        paintQuiz(sid);
+        $("#qzS").onchange = (e) => { W.sel = e.target.value; paintQuiz(W.sel); };
+        $("#quizBox").addEventListener("submit", async (e) => {
+          const f = e.target.closest("form.check"); if (!f) return;
+          e.preventDefault();
+          const chosen = f.querySelector("input:checked"); if (!chosen) { f.querySelector(".check-result").textContent = "Pick an answer first."; return; }
+          const s = $("#qzS").value;
+          try { const r = await api(`/api/student/checks/${f.dataset.check}/answer`, { method: "POST", body: { chosen: Number(chosen.value) } }); W.quiz[s].results[f.dataset.check] = { ...r, chosen: Number(chosen.value) }; load().then(paintNav).catch(() => {}); paintQuiz(s); }
+          catch (x) { f.querySelector(".check-result").textContent = x.message; }
+        });
+      }
+      if (!W.flashData) W.flashData = await api("/api/student/flashcards");
+      if (W.section !== "practice") return;
+      const deck = W.flashData.decks.find((x) => x.course.id === W.id);
+      W.flash = W.flash || { cards: (deck?.cards || []).map((k) => ({ ...k, code: c.code })), i: 0, flipped: false, known: new Set() };
+      flashDeck($("#fcBox"), W.flash, W.sc);
+    }
+
+    // ---------- class summary for one finished class ----------
+    async function summary(el) {
+      const ended = endedSessions(), sid = selSession();
+      el.innerHTML = `<div class="page-head"><h1>Class summary</h1>
+          ${ended.length > 1 ? `<div class="pick-row"><label for="sumS">Class</label><select id="sumS">${ended.map((s) => `<option value="${s.id}"${s.id === sid ? " selected" : ""}>${esc(dayTime(s.started_at))}</option>`).join("")}</select></div>` : ""}</div>
+        <div id="sumBody"><p class="note loading">Loading…</p></div>`;
+      $("#sumS")?.addEventListener("change", (e) => { location.hash = `#/course/${W.id}/summary?s=${e.target.value}`; });
+      const draw = async () => {
+        const d = await api(`/api/student/sessions/${sid}`);
+        if (W.section !== "summary" || selSession() !== sid) return d.summaryState;
+        $("#sumBody").innerHTML = `
+          <p class="note sum-when">${esc(dayTime(d.session.started_at))}${d.session.title ? ` · ${esc(d.session.title)}` : ""}</p>
+          <section class="panel sum-panel" aria-live="polite">${summaryBlock(d)}</section>
+          ${d.events.length ? `<section class="panel"><h2>Your moments in this class</h2><ul class="sum-moments">${d.events.map((e) => `<li><a href="#/course/${W.id}/moments/${e.id}">${stateChip(e)}<span><time>${fmt(e.t)}</time> ${esc(e.topic || "Your moment")}</span></a></li>`).join("")}</ul></section>` : ""}`;
+        return d.summaryState;
+      };
+      const st = await draw();
+      if (st === "pending" || st === "not_ended") Lost.poll(async () => { const s = await draw(); if (s !== "pending" && s !== "not_ended") W.sc.dispose(); }, 5000, W.sc);
+    }
+
+    // ---------- course materials ----------
+    function materials(el) {
+      const d = W.d, groups = new Map();
+      for (const m of d.materials) { const k = m.module || "Other"; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(m); }
+      const oh = safeUrl(d.course.office_hours_url), tut = safeUrl(d.course.tutoring_url);
+      el.innerHTML = `<h1>Course materials</h1>
+        ${oh || tut ? `<section class="panel"><h2>Help from people</h2><ul class="plain">${oh ? `<li><a href="${esc(oh)}" target="_blank" rel="noopener">Office hours</a></li>` : ""}${tut ? `<li><a href="${esc(tut)}" target="_blank" rel="noopener">Tutoring</a></li>` : ""}</ul></section>` : ""}
+        ${d.materials.length ? `<p class="note">Only what your professor shared with students. Lost quotes these in explanations.</p>
+          ${[...groups].map(([g, ms]) => `<section class="mat-group"><h2>${esc(g)}</h2><ul class="mat-list">${ms.map((m) => `<li>${m.url ? `<a href="${esc(m.url)}" target="_blank" rel="noopener">${esc(m.title)}</a>` : `<span>${esc(m.title)}</span>`}${m.kind ? ` <span class="tag">${esc(m.kind)}</span>` : ""}${m.source === "demo" ? ` <span class="tag">demo</span>` : ""}</li>`).join("")}</ul></section>`).join("")}`
+          : `<p class="empty-line">Your professor hasn't shared any materials with students yet.</p>`}`;
+    }
+
+    const SECT = { overview, moments, practice, summary, materials };
+    await show(args, params);
+  }
+
+  // ================= flash cards =================
+  // One deck on one element. st holds the order and position, so leaving and coming back keeps the place.
+  function flashDeck(el, st, scope) {
+    const KIND = { lost: "You got lost here", idea: "Big idea", term: "Term" };
+    el.innerHTML = st.cards.length ? `<div class="fc-wrap">
+        <div class="fc-progress" aria-hidden="true"><i id="fcBar"></i></div>
+        <div id="fcStage"></div>
+        <div class="fc-controls">
+          <button type="button" id="fcPrev">Back</button>
+          <button type="button" id="fcAgain">Show again later</button>
+          <button type="button" class="primary" id="fcKnow">I know this</button>
+          <button type="button" id="fcNext">Next</button>
+        </div>
+        <p class="fc-foot"><span id="fcCount" aria-live="polite"></span><button type="button" class="quiet" id="fcShuffle">Shuffle</button></p>
+      </div>` : `<p class="empty-line">No cards yet. They come from published class summaries and the lines you tap.</p>`;
+    if (!st.cards.length) return;
+    const draw = () => {
+      const c = st.cards[st.i];
+      $("#fcStage").innerHTML = `
+        <button type="button" class="fc ${st.flipped ? "flipped" : ""} kind-${c.kind}" id="fcCard" aria-label="${st.flipped ? "Answer side. Press to see the question" : "Question side. Press to see the answer"}">
+          <span class="fc-face fc-front">
+            <span class="fc-top"><span class="fc-kind">${KIND[c.kind]}</span><span class="fc-code">${esc(c.code)}</span></span>
+            <span class="fc-q">${esc(c.front)}</span>
+            <span class="fc-hint">Tap to flip</span>
+          </span>
+          <span class="fc-face fc-back">
+            <span class="fc-top"><span class="fc-kind">${esc(c.front)}</span><span class="fc-code">${esc(c.code)}</span></span>
+            <span class="fc-a">${esc(c.back)}</span>
+            ${c.visual ? `<span class="fc-vis">${Lost.visual(c.visual)}</span>` : ""}
+          </span>
+        </button>`;
+      $("#fcCount").textContent = `${st.i + 1} of ${st.cards.length}${st.known.size ? ` · ${st.known.size} known` : ""}`;
+      $("#fcBar").style.width = `${(100 * (st.i + 1)) / st.cards.length}%`;
+      $("#fcCard").addEventListener("click", () => { st.flipped = !st.flipped; draw(); $("#fcCard").focus(); });
+    };
+    const go = (n) => { st.i = (st.i + n + st.cards.length) % st.cards.length; st.flipped = false; draw(); };
+    $("#fcPrev").onclick = () => go(-1);
+    $("#fcNext").onclick = () => go(1);
+    $("#fcKnow").onclick = () => { st.known.add(st.cards[st.i].front); go(1); };
+    $("#fcAgain").onclick = () => { const c = st.cards.splice(st.i, 1)[0]; st.cards.push(c); st.i %= st.cards.length; st.flipped = false; draw(); };
+    $("#fcShuffle").onclick = () => { for (let k = st.cards.length - 1; k > 0; k--) { const j = Math.floor(Math.random() * (k + 1)); [st.cards[k], st.cards[j]] = [st.cards[j], st.cards[k]]; } st.i = 0; st.flipped = false; draw(); };
+    const onKey = (e) => {
+      if (!el.isConnected || el.closest("[hidden]") || e.target.closest("input, textarea, select")) return;
+      if (e.key === "ArrowRight") go(1); else if (e.key === "ArrowLeft") go(-1);
+    };
+    document.addEventListener("keydown", onKey);
+    (scope ? scope.add : Lost.onLeave)(() => document.removeEventListener("keydown", onKey));
+    draw();
+  }
+  async function flashPage(app) {
+    const { decks } = await api("/api/student/flashcards");
+    const st = { cards: decks.flatMap((d) => d.cards.map((c) => ({ ...c, code: d.course.code }))), i: 0, flipped: false, known: new Set() };
+    app.innerHTML = `<p class="crumb"><a href="#/">Your classes</a></p><h1>Flash cards from every class</h1><div id="fcAll"></div>`;
+    flashDeck($("#fcAll"), st, null);
   }
 
   // ================= live class =================
-  // The transcript is the main reading surface and always stays on screen. Help opens beside it on a
-  // wide screen (resizable, can be minimized) and as a bottom sheet on a phone. New lines never move
-  // the student's scroll position; a "Jump to live" button appears instead.
-  async function liveClass(app, [sid]) {
+  // Mounted once per workspace and kept while the student moves between sections, so the transcript
+  // poll, the audio relay and any open help stay as they are. sc holds everything to stop on destroy.
+  function mountLive(app, sid, opts = {}) {
+    const sc = Lost.scope();
     const st = { status: "", now: "", lines: [], since: 0, rev: -1, ai: true, clock: 0, lastIdx: null, mine: [], rendered: 0, unseen: 0 };
     const H = { ev: null, phrases: [], picked: null, cards: [], busy: false, catchups: 0, tries: {}, seq: 0, state: "closed", title: "" };
     const helpW = (() => { try { return Number(localStorage.getItem("lost-help-w")) || 420; } catch { return 420; } })();
     app.innerHTML = `
       <div class="live2" id="live2" data-help="closed" style="--help-w:${helpW}px">
         <header class="live-top">
-          <div class="live-title"><p class="crumb"><a href="#/">Your classes</a></p><h1 id="roomTitle">Class</h1></div>
+          <div class="live-title"><h1 id="roomTitle" tabindex="-1">Class</h1></div>
           <div class="live-status" role="status"><span class="dot" id="dot"></span><span id="statusText">Connecting…</span><b id="clock" class="clock"></b></div>
           <div class="live-tools">
             <button id="momentsBtn" class="tool" aria-haspopup="dialog" aria-label="My moments"><span class="mlabel">My moments</span> <span id="momentsN" class="count" hidden></span></button>
@@ -137,7 +622,7 @@
         <section class="tcol" aria-labelledby="tH">
           <h2 id="tH" class="visually-hidden">Live transcript</h2>
           <div id="tlines" class="tlines2" tabindex="0" aria-label="Live transcript. Tap a line that lost you."></div>
-          <button id="jump" class="jump" hidden>New lines below · Jump to live</button>
+          <button id="jump" class="jump" hidden>Return to live</button>
           <div class="lostbar">
             <button class="lostbtn2" id="lost" disabled aria-describedby="ack"><span class="lost-main">I'm lost</span></button>
             <p id="ack" class="ack" aria-live="polite">Anonymous. Class keeps going.</p>
@@ -206,9 +691,15 @@
       markRepeatTimes();
       if (stick || full) { box.scrollTop = box.scrollHeight; st.unseen = 0; }
       else if (fresh.length) st.unseen += fresh.length;
-      $("#jump").hidden = !st.unseen;
+      paintJump();
     }
-    box.addEventListener("scroll", () => { if (nearBottom()) { st.unseen = 0; $("#jump").hidden = true; } }, { passive: true });
+    // "Return to live" shows whenever the student has scrolled away from the newest line.
+    const paintJump = () => {
+      const away = !nearBottom() && box.scrollHeight > box.clientHeight;
+      $("#jump").hidden = !away;
+      $("#jump").textContent = st.unseen ? `${st.unseen} new line${st.unseen === 1 ? "" : "s"} · Return to live` : "Return to live";
+    };
+    box.addEventListener("scroll", () => { if (nearBottom()) st.unseen = 0; paintJump(); }, { passive: true });
     const jumpLive = () => { box.scrollTo({ top: box.scrollHeight, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); st.unseen = 0; $("#jump").hidden = true; };
     $("#jump").onclick = jumpLive;
     // Tapping a line marks it: "this is where I got lost".
@@ -422,6 +913,7 @@
 
     // ---------- keyboard ----------
     const onKey = (e) => {
+      if (app.hidden) return; // shortcuts only while the live class is on screen
       const act = LostKeys.shortcutFor(e, { dialogOpen: !!document.querySelector("dialog[open]"), map: { l: "lost", j: "jump", escape: "min", "?": "keys" } });
       if (!act) return;
       if (act === "lost" && !$("#lost").disabled) { e.preventDefault(); $("#lost").click(); }
@@ -434,7 +926,7 @@
       buttons: [{ value: "", label: "Close", kind: "primary", focus: true }] });
     $("#skeys").onclick = keysDialog;
     document.addEventListener("keydown", onKey);
-    Lost.onLeave(() => document.removeEventListener("keydown", onKey));
+    sc.add(() => document.removeEventListener("keydown", onKey));
 
     // ---------- poll ----------
     Lost.poll(async (signal) => {
@@ -445,7 +937,7 @@
         $("#dot").className = `dot ${d.status}`;
         $("#statusText").textContent = { ready: "Waiting to start", live: "Live", ending: "Ending", ended: "Class is over" }[d.status];
         $("#lost").disabled = d.status !== "live";
-        if (d.status === "ended") $("#ack").innerHTML = `Class is over. <a href="#/session/${sid}">Your summary and review</a> will be ready here soon.`;
+        if (d.status === "ended") $("#ack").innerHTML = `Class is over. <a href="#/course/${opts.courseId}/summary?s=${sid}">Your summary</a> will be ready soon, and your moments are in My lost moments.`;
       }
       st.clock = d.clock; st.lastIdx = d.lastIdx; st.ai = d.ai; st.mine = d.mine || [];
       $("#clock").textContent = d.status === "live" ? fmt(d.clock) : "";
@@ -464,7 +956,8 @@
       }
       paintSince();
       handleAudio(d);
-    });
+      opts.onUpdate?.({ status: st.status, mine: st.mine, last: st.now || st.lines.filter(Boolean).at(-1)?.text || "" });
+    }, 1000, sc);
 
     // ---------- listen (professor's audio through the server) ----------
     let wantSound = false, player = null;
@@ -518,72 +1011,10 @@
       }
     }
     function stopPlayer() { if (!player) return; const p = player; player = null; p.el.pause(); p.el.removeAttribute("src"); p.el.load(); URL.revokeObjectURL(p.url); }
-    Lost.onLeave(stopPlayer);
+    sc.add(stopPlayer);
+    sc.add(() => { setHelp("closed"); $("#snack") && ($("#snack").hidden = true); });
+    return { sid, destroy: sc.dispose, focus: () => $("#roomTitle")?.focus({ preventScroll: true }) };
   }
-
-  // ================= after class =================
-  async function sessionPage(app, [sid]) {
-    const draw = async () => {
-      const d = await api(`/api/student/sessions/${sid}`);
-      const s = d.session;
-      Lost.backdrop(d.theme);
-      if (s.status === "live") { location.hash = `#/live/${sid}`; return "live"; }
-      const unresolved = d.events.filter((e) => e.status !== "resolved");
-      app.innerHTML = `
-        <p class="crumb"><a href="#/course/${s.course_id}">${esc(s.code)} ${esc(s.course)}</a></p>
-        <h1>Class on ${when(s.started_at)}</h1>
-        ${s.title ? `<p class="note">${esc(s.title)}</p>` : ""}
-        ${d.events.length ? `<button class="gold" data-scroll="review">Your learning moments (${d.events.length}${unresolved.length ? `, ${unresolved.length} still open` : ""})</button>` : ""}
-        <section class="panel" aria-live="polite"><h2>Class summary</h2>${summaryBlock(d)}</section>
-        <section class="panel" id="review"><h2>Your learning moments</h2><p class="note">Private: only you see this. Every spot you marked is here, including the ones you later understood.</p>
-          ${d.events.length ? `<ol class="moment-strip">${d.events.map((e) => `<li class="${e.status === "resolved" ? "ok" : "open"}"><a href="#ev-${e.id}" data-jump="ev-${e.id}"><time>${fmt(e.t)}</time> ${esc(e.topic || "Your moment")}</a><span class="badge ${e.status === "resolved" ? "good" : "warn"}">${e.status === "resolved" ? "You said you got it" : "Still open"}</span></li>`).join("")}</ol>
-            <div class="quiz-box" id="quizBox"><h3>Optional quiz</h3><p class="note">Up to 3 questions on the spots you marked, each with a new example. Not a grade, and it doesn't change what you marked as understood.</p><button class="primary" id="startQuiz">Start the quiz</button></div>
-            ${d.events.map((e) => eventBlock(e, d)).join("")}` : `<p class="empty-state">You didn't tap I'm lost in this class.</p>`}</section>
-        ${d.support.officeHours || d.support.tutoring ? `<section class="panel"><h2>More help</h2><p class="note">Links added by your professor.</p><ul class="plain">${safeUrl(d.support.officeHours) ? `<li><a href="${esc(d.support.officeHours)}" target="_blank" rel="noopener">Office hours</a></li>` : ""}${safeUrl(d.support.tutoring) ? `<li><a href="${esc(d.support.tutoring)}" target="_blank" rel="noopener">Tutoring</a></li>` : ""}</ul></section>` : ""}`;
-      const target = location.hash.match(/#ev-([\w-]+)$/)?.[1];
-      if (target) document.getElementById(`ev-${target}`)?.scrollIntoView();
-      return d.summaryState;
-    };
-    const first = await draw();
-    if (first === "pending" || first === "not_ended") Lost.poll(async () => { const s = await draw(); if (s !== "pending" && s !== "not_ended") Lost.render(); }, 4000);
-    const onClick = async (e) => {
-      const sc = e.target.closest("button[data-scroll]");
-      if (sc) { const t = document.getElementById(sc.dataset.scroll); t.scrollIntoView({ behavior: "smooth" }); t.querySelector("input,button")?.focus({ preventScroll: true }); return; }
-      const j = e.target.closest("a[data-jump]");
-      if (j) { e.preventDefault(); document.getElementById(j.dataset.jump)?.scrollIntoView({ block: "start" }); return; }
-      if (e.target.id === "startQuiz") return startQuiz(e.target);
-      const b = e.target.closest("button[data-ev]"); if (!b) return;
-      const id = b.dataset.ev;
-      if (b.dataset.do === "resolved" || b.dataset.do === "still") { await api(`/api/student/events/${id}/status`, { method: "POST", body: { status: b.dataset.do } }); toast(b.dataset.do === "resolved" ? "Marked resolved." : "Kept open."); draw(); }
-      if (b.dataset.do === "oh") { const ta = $(`#oh-${id}`); await api(`/api/student/events/${id}/office-hours`, { method: "POST", body: { text: ta.value } }); toast("Saved. Lost doesn't send it anywhere."); }
-      if (b.dataset.do === "copy") { const ta = $(`#oh-${id}`); try { await navigator.clipboard.writeText(ta.value); toast("Copied."); } catch { ta.select(); toast("Select and copy the text."); } }
-    };
-    // The quiz: unresolved moments first, then the ones the student said they understood.
-    async function startQuiz(btn) {
-      const d = await api(`/api/student/sessions/${sid}`);
-      const pick = [...d.events.filter((e) => e.status !== "resolved"), ...d.events.filter((e) => e.status === "resolved")].slice(0, 3);
-      btn.disabled = true; btn.textContent = "Writing questions…";
-      const qs = [];
-      for (const ev of pick) { try { qs.push({ ev, q: await api(`/api/student/events/${ev.id}/check`, { method: "POST" }) }); } catch (x) { qs.push({ ev, err: x.message }); } }
-      $("#quizBox").innerHTML = `<h3>Optional quiz</h3><p class="note">Not a grade. New examples, written by the AI.</p>${qs.map(({ ev, q, err }, i) => err ? `<p class="note">Question ${i + 1} (${esc(ev.topic || fmt(ev.t))}): ${esc(err)}</p>`
-        : `<form class="check" data-check="${q.id}" data-quiz="1"><fieldset><legend><span class="lesson-label">${i + 1} · ${esc(ev.topic || `the spot at ${fmt(ev.t)}`)}</span><br>${esc(q.question)}</legend>
-          ${q.choices.map((ch, k) => `<label class="choice"><input type="radio" name="q-${q.id}" value="${k}"> ${esc(ch)}</label>`).join("")}</fieldset>
-          <button class="primary">Answer</button><p class="check-result" aria-live="polite"></p></form>`).join("")}`;
-    }
-    const onSubmit = async (e) => {
-      const f = e.target.closest("form.check"); if (!f) return;
-      e.preventDefault();
-      const chosen = f.querySelector("input:checked"); if (!chosen) { f.querySelector(".check-result").textContent = "Pick an answer first."; return; }
-      const r = await api(`/api/student/checks/${f.dataset.check}/answer`, { method: "POST", body: { chosen: Number(chosen.value) } }).catch((x) => ({ error: x.message }));
-      if (r.error) { f.querySelector(".check-result").textContent = r.error; return; }
-      f.querySelectorAll("input,button").forEach((x) => (x.disabled = true));
-      f.querySelectorAll("label.choice").forEach((l, k) => { if (k === r.correctIndex) l.classList.add("right"); else if (l.contains(chosen)) l.classList.add("wrong"); });
-      f.querySelector(".check-result").innerHTML = `${r.correct ? "<b>Right.</b>" : "<b>Not quite.</b>"} ${esc(r.why || "")}`;
-    };
-    app.addEventListener("click", onClick); app.addEventListener("submit", onSubmit);
-    Lost.onLeave(() => { app.removeEventListener("click", onClick); app.removeEventListener("submit", onSubmit); });
-  }
-
   function summaryBlock(d) {
     if (d.summaryState === "not_ended") return `<p class="note">Class hasn't finished yet.</p>`;
     if (!d.summary) return d.summaryState === "failed" ? `<p><span class="badge bad">Not available</span> The summary couldn't be written. Your professor can retry it. Your own moments are below.</p>` : `<p><span class="badge">Being written</span> This page updates by itself, and you'll get a notification.</p>`;
@@ -592,28 +1023,6 @@
     return `<p class="note">Written by AI from today's lecture and notes. Each topic has its sources under Sources.</p>${Lost.sharedSummary(s)}
       ${d.summary.materials?.length ? `<h3>Course materials used</h3><ul>${[...new Map(d.summary.materials.map((m) => [m.title + "|" + (m.location === m.title ? "" : m.location), { ...m, location: m.location === m.title ? "" : m.location }])).values()].map((m) => `<li>${safeUrl(m.url) ? `<a href="${esc(m.url)}" target="_blank" rel="noopener">${esc(m.title)}</a>` : esc(m.title)}${m.location ? `, ${esc(m.location)}` : ""}</li>`).join("")}</ul>` : ""}
       ${d.summary.gaps?.length ? `<p class="note warn">Parts of class weren't recorded: ${d.summary.gaps.map((g) => `${fmt(g.from_t)}-${g.to_t == null ? "end" : fmt(g.to_t)}`).join(", ")}.</p>` : ""}`;
-  }
-
-  function eventBlock(e, d) {
-    const card = e.card && e.card.ai !== false ? e.card : null;
-    const tried = [card ? "read Lost's explanation" : "", e.checks.some((c) => c.kind === "comprehension" && c.chosen != null) ? "tried a practice question" : ""].filter(Boolean).join(" and ");
-    const cardSources = card ? (card.v === 2 ? [card.takeaway, card.explanation, card.connection].filter(Boolean).flatMap((c) => c.sources || []) : card.context?.sources || []) : [];
-    const source = cardSources.find((x) => x.type === "passage");
-    const draft = e.officeHours || `I got lost at ${fmt(e.t)} in the ${when(d.session.started_at)} class${e.topic ? `, on ${e.topic}` : ""}.${e.line ? ` You said: "${e.line.text}"` : ""}${source ? ` The related material is ${source.title}${source.location ? `, ${source.location}` : ""}.` : ""}${tried ? ` I ${tried}.` : ""}${e.question ? ` My question: ${e.question}` : " What I still don't get is: "}`;
-    return `<article class="ev" id="ev-${e.id}">
-      <h3><span class="at">${fmt(e.t)}</span>${esc(e.topic || "The part you marked")} <span class="badge ${e.status === "resolved" ? "good" : "warn"}">${e.status === "resolved" ? "You said you got it" : "Still open"}</span></h3>
-      ${e.line ? `<p class="lost-at"><span>You got lost at</span>"${esc(e.line.text)}"</p>` : ""}
-      ${e.question ? `<p class="note">Your question: ${esc(e.question)}</p>` : ""}
-      ${card ? `<details><summary>The explanation you got</summary>${Lost.lesson(card, { headingLevel: 4 })}</details>` : ""}
-      ${e.checks.filter((c) => c.chosen != null).map((c) => `<p class="note">${c.kind === "diagnostic" ? "Quick check" : c.kind === "review" ? "Review question" : "Quiz"}: ${c.correct ? "answered right" : "answered wrong"} (separate from what you marked).</p>`).join("")}
-      ${e.review && e.review.chosen == null ? `<form class="check" data-check="${e.review.id}"><fieldset><legend><b>Review</b> (made by the AI from today's class): ${esc(e.review.question)}</legend>
-        ${e.review.choices.map((ch, k) => `<label class="choice"><input type="radio" name="r-${e.review.id}" value="${k}"> ${esc(ch)}</label>`).join("")}</fieldset>
-        <button class="primary">Answer</button><p class="check-result" aria-live="polite"></p></form>` : ""}
-      <div class="row">${e.status === "resolved" ? `<button data-ev="${e.id}" data-do="still">Reopen</button>` : `<button data-ev="${e.id}" data-do="resolved">I get it now</button>`}</div>
-      ${e.status !== "resolved" ? `<details class="oh"><summary>Prepare an office-hours question</summary>
-        <label for="oh-${e.id}">Edit it before you use it. Lost doesn't send it to anyone.</label><textarea id="oh-${e.id}" rows="5">${esc(draft)}</textarea>
-        <div class="row"><button data-ev="${e.id}" data-do="oh">Save</button><button data-ev="${e.id}" data-do="copy">Copy</button></div></details>` : ""}
-    </article>`;
   }
 
   // shared summary renderer (same as the professor's preview)
@@ -625,11 +1034,13 @@
     ${s.deadlines.length ? `<h3>Deadlines mentioned</h3><ul>${s.deadlines.map((x) => `<li>${esc(x.text)}${Lost.sources(x.sources, "Source")}</li>`).join("")}</ul>` : ""}
   </div>`;
 
+  const COURSE = /^\/course\/([\w-]+)(?:\/(live|moments|practice|summary|materials))?(?:\/([\w-]+))?(?:\/(explain|context|check|sources))?$/;
   Lost.boot("student", [
     [/^\/$/, home],
     [/^\/join\/([A-Za-z0-9]{4,10})$/, join],
-    [/^\/course\/([\w-]+)$/, course],
-    [/^\/live\/([\w-]+)$/, liveClass],
-    [/^\/session\/([\w-]+)(?:#.*)?$/, sessionPage],
+    [COURSE, (app, [id, section, x, y], params) => workspace(app, [id, section || "overview", x, y], params), { key: (a) => a[0] }],
+    [/^\/flashcards$/, flashPage],
+    [/^\/live\/([\w-]+)$/, liveLink],
+    [/^\/session\/([\w-]+)(?:#ev-([\w-]+))?$/, sessionLink],
   ]);
 })();

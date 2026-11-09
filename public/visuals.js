@@ -270,39 +270,51 @@
 
   // The lesson card. Up front: the question (as the panel title), a hook, the idea in one line, one
   // picture, an example, and where it fits in class. "Explain more" holds the rest; "Sources" opens on demand.
-  // ---------- AI illustration: drawn automatically for every card, then kept for this page ----------
+  // ---------- AI illustration: drawn when the student asks, then reused ----------
+  // States: not offered (the card has no picture: words or the diagram explain it better), off on this
+  // server, ready to draw (button), drawing, drawn, failed (message + try again). Drawn pictures are
+  // cached by the server; the page also keeps them for this visit, so going back never draws twice.
   const illos = new Map(); // help id -> { url, caption, alt }
   const illoLoading = new Map(); // help id -> promise, so re-renders share one request
   const illoFailed = new Map(); // help id -> message
-  const illoBackup = new Map(); // help id -> diagram to show if the picture can't be drawn
-  const illoFigure = (d) => `<figure class="illo-fig"><img src="${esc(d.url)}" alt="${esc(d.alt)}" width="512" height="512" decoding="async">
+  const illoFigure = (d) => `<figure class="illo-fig"><div class="illo-surface"><img src="${esc(d.url)}" alt="${esc(d.alt)}" width="512" height="512" decoding="async"></div>
       <figcaption><span class="illo-tag">AI illustration</span> ${esc(d.caption)}</figcaption></figure>`;
-  const illoRetry = (id, msg) => `<button type="button" class="illo-btn" data-illo="${esc(id)}">Try the illustration again</button><p class="illo-err" role="status">${esc(msg || "No illustration this time.")}</p>`;
-  const illoInner = (id) => illos.has(id) ? illoFigure(illos.get(id)) : illoFailed.has(id) ? (illoBackup.get(id) ? L.visual(illoBackup.get(id)) : "") + illoRetry(id, illoFailed.get(id)) : `<div class="illo-skel" role="status" aria-label="Drawing a picture"></div>`;
+  const illoOffer = (id, ill) => `<div class="illo-offer"><button type="button" class="illo-btn" data-illo="${esc(id)}"><span class="illo-icon" aria-hidden="true"></span>Show illustration</button>
+      <p class="illo-cap">${esc(ill.caption)}</p></div>`;
+  const illoInner = (id, ill) => illos.has(id) ? illoFigure(illos.get(id))
+    : illoLoading.has(id) ? `<div class="illo-skel" role="status"><span>Drawing the picture…</span></div>`
+    : illoFailed.has(id) ? `<div class="illo-offer failed"><p class="illo-err" role="status">${esc(illoFailed.get(id))}</p><button type="button" class="illo-btn" data-illo="${esc(id)}">Try again</button></div>`
+    : illoOffer(id, ill);
+  const illoSpecs = new Map(); // help id -> { caption, alt } for repaints
   function loadIllo(id) {
     if (illos.has(id) || illoLoading.has(id)) return;
     illoFailed.delete(id);
-    const paint = () => document.querySelectorAll(`[data-illo-box="${CSS.escape(id)}"]`).forEach((b) => { b.innerHTML = illoInner(id); });
+    const paint = () => document.querySelectorAll(`[data-illo-box="${CSS.escape(id)}"]`).forEach((b) => { b.innerHTML = illoInner(id, illoSpecs.get(id) || {}); });
     const p = L.api(`/api/help/${encodeURIComponent(id)}/illustration`, { method: "POST", body: {} })
       .then((d) => { illos.set(id, d); })
       .catch((err) => { illoFailed.set(id, err.message); })
-      .finally(() => { illoLoading.delete(id); paint(); });
+      .finally(() => { illoLoading.delete(id); paint(); document.querySelector(`[data-illo-box="${CSS.escape(id)}"] img`)?.closest("figure")?.setAttribute("tabindex", "-1"); });
     illoLoading.set(id, p);
     paint();
   }
-  function illustration(p, helpId) {
-    if (!p.illustration || !helpId) return "";
-    if (p.backupVisual) illoBackup.set(helpId, p.backupVisual);
-    if (!L.illustrations) return p.backupVisual ? L.visual(p.backupVisual) : "";
-    if (!illos.has(helpId) && !illoFailed.has(helpId)) setTimeout(() => loadIllo(helpId), 0);
-    return `<div class="illo" data-illo-box="${esc(helpId)}">${illoInner(helpId)}</div>`;
-  }
+  const ILLO_OFF = { off: "Pictures are turned off on this server, so this card has words and a diagram only.", missing_credentials: "Pictures aren't set up on this server yet, so this card has words and a diagram only." };
+  // The illustration block for a card, or "" when the card has none. noneNote: say why there's no picture.
+  L.illustration = (p, helpId, { noneNote = false } = {}) => {
+    const ill = p?.illustration;
+    if (!ill || !helpId) return noneNote ? `<p class="note illo-none">No picture for this one: the explanation and diagram show it better than a drawing would.</p>` : "";
+    illoSpecs.set(helpId, ill);
+    if (ill.ready && !illos.has(helpId)) illos.set(helpId, { url: `/api/help/${encodeURIComponent(helpId)}/illustration.img`, caption: ill.caption, alt: ill.alt });
+    if (!illos.has(helpId) && L.illustrationState && L.illustrationState !== "on") return `<p class="note illo-none">${esc(ILLO_OFF[L.illustrationState] || ILLO_OFF.off)}</p>`;
+    return `<div class="illo" data-illo-box="${esc(helpId)}">${illoInner(helpId, ill)}</div>`;
+  };
   document.addEventListener("click", (e) => {
     const b = e.target.closest("[data-illo]"); if (!b || b.disabled) return;
     b.disabled = true; loadIllo(b.dataset.illo);
   });
 
-  L.lesson = (raw, { kicker = "", headingLevel = 3, showTitle = true, helpId = "" } = {}) => {
+  // The lesson card, split into parts so the moment review can show them as tabs. Up front: the
+  // question (as the title), a hook, the idea in one line, an example; then the picture; then sources.
+  L.lessonParts = (raw, { kicker = "", headingLevel = 3, showTitle = true, helpId = "" } = {}) => {
     const p = upgrade(raw), h = `h${headingLevel}`;
     const all = [p.takeaway, p.explanation, p.connection, ...(p.qualifications || []), ...(p.rule ? [p.rule.what_happened, p.rule.what_next, ...p.rule.when_differs] : [])].filter(Boolean).flatMap((c) => c.sources || []);
     const seen = new Set(), sources = all.filter((s) => (seen.has(s.id) ? false : seen.add(s.id)));
@@ -313,26 +325,32 @@
       p.qualifications?.length ? `<div class="lesson-quals"><p class="lesson-label">Keep in mind</p>${p.qualifications.map((c) => claim(c)).join("")}</div>` : "",
     ].filter(Boolean).join("");
     const notes = (p.provenance || []).map((n) => `<p class="src-note">${esc(n)}</p>`).join("");
-    return `<article class="lesson">
-      ${kicker ? `<p class="lesson-kicker">${esc(kicker)}</p>` : ""}
-      ${showTitle && p.title ? `<${h} class="lesson-title">${esc(p.title)}</${h}>` : ""}
-      ${!p.enough && p.clarify ? `<p class="clarify">${esc(p.clarify)}</p>` : ""}
-      ${p.hook ? `<p class="lesson-hook">${esc(p.hook)}</p>` : ""}
-      ${claim(p.takeaway, p.hook ? "lesson-takeaway small" : "lesson-takeaway")}
-      ${p.uncertainty ? `<p class="lesson-flag" role="note"><span class="unsure-mark" aria-hidden="true">!</span> ${esc(p.uncertainty)}</p>` : ""}
-      ${p.visual ? L.visual(p.visual) : ""}
-      ${p.rule ? `<div class="rule-flow" role="group" aria-label="The rule, with its exceptions as branches">
+    const rule = p.rule ? `<div class="rule-flow" role="group" aria-label="The rule, with its exceptions as branches">
           <p class="rf-row"><span class="rf-k">If</span><span>${esc(p.rule.what_happened.text)}</span></p>
           <p class="rf-row"><span class="rf-k">Then</span><span>${esc(p.rule.what_next.text)}</span></p>
           ${p.rule.when_differs.map((c) => `<p class="rf-row rf-alt"><span class="rf-k">Unless</span><span>${esc(c.text)}</span></p>`).join("")}
-        </div>` : ""}
-      ${p.example ? `<div class="lesson-example"><p class="lesson-label">${exampleLabel(p.example)}</p><p>${esc(p.example.text)}</p></div>` : ""}
-      ${illustration(p, helpId)}
-      ${p.connection?.text ? `<p class="lesson-connect-line"><span class="lesson-label">In class</span> ${esc(p.connection.text)}</p>` : ""}
+        </div>` : "";
+    return {
+      p, sources, shaky, more, rule,
+      head: `${kicker ? `<p class="lesson-kicker">${esc(kicker)}</p>` : ""}${showTitle && p.title ? `<${h} class="lesson-title">${esc(p.title)}</${h}>` : ""}`,
+      explain: `${!p.enough && p.clarify ? `<p class="clarify">${esc(p.clarify)}</p>` : ""}
+        ${p.hook ? `<p class="lesson-hook">${esc(p.hook)}</p>` : ""}
+        ${claim(p.takeaway, p.hook ? "lesson-takeaway small" : "lesson-takeaway")}
+        ${p.uncertainty ? `<p class="lesson-flag" role="note"><span class="unsure-mark" aria-hidden="true">!</span> ${esc(p.uncertainty)}</p>` : ""}`,
+      example: p.example ? `<div class="lesson-example"><p class="lesson-label">${exampleLabel(p.example)}</p><p>${esc(p.example.text)}</p></div>` : "",
+      visual: p.visual ? L.visual(p.visual) : "",
+      illustration: (opts) => L.illustration(p, helpId, opts),
+      connection: p.connection?.text ? `<p class="lesson-connect-line"><span class="lesson-label">In class</span> ${esc(p.connection.text)}</p>` : "",
+      sourcesHtml: `${notes}${sources.length ? `<ul class="src-list">${sources.map(sourceItem).join("")}</ul>` : `<p class="note">Nothing in the lecture or notes backed this up, so treat it as background.</p>`}`,
+    };
+  };
+  L.lesson = (raw, opts = {}) => {
+    const x = L.lessonParts(raw, opts);
+    return `<article class="lesson">
+      ${x.head}${x.explain}${x.visual}${x.rule}${x.example}${x.illustration()}${x.connection}
       <div class="lesson-foot">
-        ${more ? `<details class="lesson-more"><summary>Explain more</summary><div class="lesson-more-body">${more}</div></details>` : ""}
-        <details class="lesson-src"><summary>Sources${sources.length ? ` (${sources.length})` : ""}${shaky ? ` · ${shaky} unclear` : ""}</summary><div class="lesson-more-body">
-          ${notes}${sources.length ? `<ul class="src-list">${sources.map(sourceItem).join("")}</ul>` : `<p class="note">Nothing in the lecture or notes backed this up, so treat it as background.</p>`}</div></details>
+        ${x.more ? `<details class="lesson-more"><summary>Explain more</summary><div class="lesson-more-body">${x.more}</div></details>` : ""}
+        <details class="lesson-src"><summary>Sources${x.sources.length ? ` (${x.sources.length})` : ""}${x.shaky ? ` · ${x.shaky} unclear` : ""}</summary><div class="lesson-more-body">${x.sourcesHtml}</div></details>
       </div>
     </article>`;
   };

@@ -63,21 +63,5 @@
     requestAnimationFrame(() => requestAnimationFrame(() => layer.classList.add("on")));
     [...el.children].slice(0, -1).forEach((old) => { old.classList.remove("on"); setTimeout(() => old.remove(), 1200); });
   };
-  // Course header art: a band of line drawings from one set (see lib/theme.js ART). Drawn here from
-  // fixed paths, so it is light, works offline and needs no image licence beyond this project's own.
-  const ART = { computing: ["cpu", "binary", "code", "network", "monitor", "search"], economics: ["market", "coin", "chart", "axes", "sigma"],
-    biology: ["dna", "leaf", "molecule", "flask"], history: ["column", "globe", "book", "clock"], sports: ["puck", "whistle", "goal", "trophy"],
-    math: ["sigma", "pi", "axes", "chart"], chemistry: ["flask", "molecule", "atom"], physics: ["atom", "wave", "gear", "axes"],
-    writing: ["book", "letters", "pencil"], general: ["bulb", "book", "pencil"] };
-  L.courseArt = (art, seed = "") => {
-    const icons = ART[art] || ART.general, r = rng(art + seed), n = 7;
-    const items = Array.from({ length: n }, (_, i) => {
-      const ic = icons[(i + Math.floor(r() * icons.length)) % icons.length], size = 30 + Math.round(r() * 22);
-      const x = 8 + i * (300 / n) + r() * 14, y = 10 + r() * 30, rot = Math.round((r() - 0.5) * 24);
-      return `<g transform="translate(${x.toFixed(1)} ${y.toFixed(1)}) rotate(${rot} ${size / 2} ${size / 2}) scale(${(size / 48).toFixed(3)})" class="${i % 3 === 1 ? "ca-gold" : ""}">${P[ic] || ""}</g>`;
-    }).join("");
-    return `<svg class="course-art" viewBox="0 0 320 84" preserveAspectRatio="xMidYMid slice" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${items}</svg>`;
-  };
-  L.artIcon = (id) => `<svg viewBox="0 0 48 48" width="28" height="28" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${P[id] || ""}</svg>`;
   L.clearBackdrop = () => { if (el) { el.remove(); el = null; key = ""; } };
 })();
