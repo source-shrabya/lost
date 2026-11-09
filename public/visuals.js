@@ -274,10 +274,11 @@
   const illos = new Map(); // help id -> { url, caption, alt }
   const illoLoading = new Map(); // help id -> promise, so re-renders share one request
   const illoFailed = new Map(); // help id -> message
+  const illoBackup = new Map(); // help id -> diagram to show if the picture can't be drawn
   const illoFigure = (d) => `<figure class="illo-fig"><img src="${esc(d.url)}" alt="${esc(d.alt)}" width="512" height="512" decoding="async">
       <figcaption><span class="illo-tag">AI illustration</span> ${esc(d.caption)}</figcaption></figure>`;
   const illoRetry = (id, msg) => `<button type="button" class="illo-btn" data-illo="${esc(id)}">Try the illustration again</button><p class="illo-err" role="status">${esc(msg || "No illustration this time.")}</p>`;
-  const illoInner = (id) => illos.has(id) ? illoFigure(illos.get(id)) : illoFailed.has(id) ? illoRetry(id, illoFailed.get(id)) : `<div class="illo-skel" role="status" aria-label="Drawing a picture"></div>`;
+  const illoInner = (id) => illos.has(id) ? illoFigure(illos.get(id)) : illoFailed.has(id) ? (illoBackup.get(id) ? L.visual(illoBackup.get(id)) : "") + illoRetry(id, illoFailed.get(id)) : `<div class="illo-skel" role="status" aria-label="Drawing a picture"></div>`;
   function loadIllo(id) {
     if (illos.has(id) || illoLoading.has(id)) return;
     illoFailed.delete(id);
@@ -290,7 +291,9 @@
     paint();
   }
   function illustration(p, helpId) {
-    if (!p.illustration || !helpId || !L.illustrations) return "";
+    if (!p.illustration || !helpId) return "";
+    if (p.backupVisual) illoBackup.set(helpId, p.backupVisual);
+    if (!L.illustrations) return p.backupVisual ? L.visual(p.backupVisual) : "";
     if (!illos.has(helpId) && !illoFailed.has(helpId)) setTimeout(() => loadIllo(helpId), 0);
     return `<div class="illo" data-illo-box="${esc(helpId)}">${illoInner(helpId)}</div>`;
   }

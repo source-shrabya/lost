@@ -49,7 +49,7 @@ function fakeAi({ prompt, label }) {
         example: { text: "Grid 1010 / 1100", why: "Only one row and one column break.", origin: "lecture", ref: `L${marked}` },
         rule: { what_happened: claim("One bit flips.", [`L${marked}`]), what_next: claim("Its row and column fail.", [`L${marked}`]), when_differs: [claim("Two flips in one row hide each other.", [])] },
         qualifications: [], uncertainty: "", connection: claim("It builds on single parity.", [`L${lines[0]}`]),
-        visual: aiMode === "badvisual" ? wire("decision", { items: [{ id: "a", label: "Flip?", kind: "outcome" }, { id: "b", label: "x", kind: "outcome" }], links: [{ from: "a", to: "b", label: "" }] })
+        visual: aiMode === "novisual" ? null : aiMode === "badvisual" ? wire("decision", { items: [{ id: "a", label: "Flip?", kind: "outcome" }, { id: "b", label: "x", kind: "outcome" }], links: [{ from: "a", to: "b", label: "" }] })
           : wire("bit_grid", { rows: ["1010", "1100", "0111"], settings: { flip_row: 1, flip_col: 2 } }),
         illustration: { prompt: "A student flipping one light switch in a wall of switches", caption: "One flipped switch stands out in its row and column.", alt: "A wall of light switches with one flipped the other way." },
         diagnostic: label === "help:explain" ? { question: "What does one parity bit catch?", choices: ["one flipped bit", "two flipped bits", "nothing"], correct_index: 0, prerequisite: "single parity" } : null,
@@ -706,7 +706,8 @@ test("AI illustrations: drawn ahead for every card, prompt stays on the server, 
   const img = await import("../lib/illustrate.js");
   process.env.IMAGE_USER_BURST = "1000";
   process.env.IMAGE_PREDRAW = "0"; // this part checks the on-request path; drawing ahead is checked at the end
-  ai.setFakeProvider(fakeAi); aiMode = "ok";
+  Object.assign(process.env, { IMAGE_GENERATION_ENABLED: "true", CLOUDFLARE_ACCOUNT_ID: "acct-test", CLOUDFLARE_API_TOKEN: "tok-secret-test" });
+  ai.setFakeProvider(fakeAi); aiMode = "novisual"; // a picture is drawn only when the card has no diagram
   const rivera = await as("prof"), jordan = await as("jordan"), riley = await as("riley");
   const { sid } = await liveSession(rivera);
   await say(rivera, sid, "Two dimensional parity puts a parity bit on every row and every column.");
@@ -804,6 +805,17 @@ test("AI illustrations: drawn ahead for every card, prompt stays on the server, 
   assert.equal(db.one("SELECT status FROM illustrations WHERE help_id = ?", ahead.id).status, "ok");
   assert.equal(calls.length, 8);
   assert.equal((await jordan.post(`/api/help/${ahead.id}/illustration`)).status, 200); assert.equal(calls.length, 8);
+  assert.equal(ahead.payload.backupVisual.type, "concept_map"); // shown if the picture can't be drawn
+
+  // One thing to look at per card: a diagram means no picture; no diagram and no drawing means the backup map.
+  aiMode = "ok";
+  const withDiagram = (await jordan.post(`/api/student/events/${ev.id}/help`, { kind: "simpler", attempt: 2 })).data;
+  assert.equal(withDiagram.payload.visual.type, "bit_grid"); assert.equal(withDiagram.payload.illustration, undefined);
+  aiMode = "novisual"; delete process.env.IMAGE_GENERATION_ENABLED;
+  const noDraw = (await jordan.post(`/api/student/events/${ev.id}/help`, { kind: "simpler", attempt: 3 })).data;
+  assert.equal(noDraw.payload.visual.type, "concept_map"); assert.equal(noDraw.payload.illustration, undefined);
+  assert.equal(calls.length, 8);
+  aiMode = "ok";
 
   for (const k of ["IMAGE_GENERATION_ENABLED", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN", "IMAGE_USER_BURST", "IMAGE_DAILY_MAX", "IMAGE_PREDRAW"]) delete process.env[k];
   img.setFetchForTests(null);
