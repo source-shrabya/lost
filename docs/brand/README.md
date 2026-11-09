@@ -1,0 +1,3 @@
+# Concept A: the tapped line
+
+The mark is three short transcript lines on an ink square, and the middle one sits inside a gold highlight, the way a line looks on the professor's screen after a student taps it. It shows what the app does in one picture: a lecture becomes lines of text, and the line where someone got lost lights up. I tried two other versions, a plain gold middle line and a gold line with a round tap dot at its end, but the first looked like a menu icon and the second looked like an on/off switch. Every shape sits on even units of a 32 by 32 grid, so at 16 px each edge lands on a whole pixel and the favicon stays sharp. The wordmark is Atkinson Hyperlegible Next ExtraBold (800), the app's own font, converted to outlines with its normal kerning.

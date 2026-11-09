@@ -855,8 +855,8 @@ route("GET", "/api/student/sessions/:id", (ctx) => {
 
 // ---------- static pages ----------
 const PAGES = { "/": null, "/login": "login.html", "/prof": "prof.html", "/student": "student.html" };
-const STATIC = new Set(["style.css", "common.js", "visuals.js", "theme.js", "covers.js", "keys.js", "login.js", "prof.js", "student.js", "favicon.svg"]);
-const TYPES = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml" };
+const STATIC = new Set(["style.css", "common.js", "visuals.js", "theme.js", "covers.js", "keys.js", "login.js", "prof.js", "student.js", "favicon.svg", "logo.svg", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "manifest.webmanifest"]);
+const TYPES = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 
 async function handle(req, res) {
   let url;

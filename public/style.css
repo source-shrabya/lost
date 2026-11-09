@@ -76,7 +76,11 @@ details > summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
 /* ---------- header ---------- */
 .top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 24px; background: var(--panel); border-bottom: 1.5px solid var(--rule); position: relative; }
 .brand { font-size: 24px; font-weight: 800; color: var(--ink); text-decoration: none; }
-.brand::before { content: ""; display: inline-block; width: 14px; height: 14px; border-radius: var(--r-sm); background: var(--gold); margin-right: 8px; vertical-align: 1px; }
+.brand { display: inline-flex; align-items: center; gap: 10px; letter-spacing: -0.02em; line-height: 1; }
+/* The mark: three transcript lines, the tapped one lit gold (public/logo.svg, docs/brand). */
+.brand::before { content: ""; flex: none; width: 30px; height: 30px; border-radius: 7px; background: url("/logo.svg") center / contain no-repeat; }
+:root[data-theme="dark"] .brand::before { box-shadow: 0 0 0 1px rgba(255,255,255,.16); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .brand::before { box-shadow: 0 0 0 1px rgba(255,255,255,.16); } }
 .role-tag { font-size: 14px; color: var(--soft); border: 1.5px solid var(--rule); border-radius: var(--r-pill); padding: 1px 10px; }
 .top-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .who { color: var(--soft); font-size: 15px; }

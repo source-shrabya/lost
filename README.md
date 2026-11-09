@@ -1,3 +1,5 @@
+<p><img src="docs/brand/lost-lockup-light.svg" alt="Lost" height="56"></p>
+
 # Lost
 
 Lost helps a student find the exact point in a lecture where they got lost, understand it from the lecture and the course materials, and get back into the class. After class, students get a summary and a private review of their own moments, and the professor sees when confusion happened and on which ideas.
