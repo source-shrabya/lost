@@ -33,12 +33,10 @@
     if (params.canvas) toast(params.canvas === "ok" ? "Canvas linked. Your classes are matched to your sections." : `Canvas: ${params.canvas}`, params.canvas === "ok" ? "" : "error");
     const { courses } = await api("/api/student/courses");
     const live = courses.filter((c) => c.active?.status === "live");
-    if (live.length === 1 && enterLive(live[0].active.id, live[0].id)) return;
+    // A live class shows as a "Join class" box; the student taps it to go in (no automatic jump).
     Lost.poll(async (signal) => {
       const r = await api("/api/student/courses", { signal });
-      const now = r.courses.filter((c) => c.active?.status === "live" && !entered.has(c.active.id));
-      if (now.length === 1) enterLive(now[0].active.id, now[0].id);
-      else if (now.length > 1 || r.courses.length !== courses.length || r.courses.filter((c) => c.active?.status === "live").length !== live.length) Lost.render();
+      if (r.courses.length !== courses.length || r.courses.filter((c) => c.active?.status === "live").length !== live.length) Lost.render();
     }, 3000);
     // Live classes first, then classes with open moments (most first), then the most recent class.
     const rank = (c) => (c.active?.status === "live" ? 0 : c.stats.unresolved ? 1 : 2);
@@ -140,8 +138,8 @@
   const SHORT = { overview: "Overview", live: "Live", moments: "Moments", practice: "Practice", summary: "Summary", materials: "Materials" };
   const TABS = [["explain", "Explanation"], ["context", "Context & diagram"], ["check", "Check understanding"], ["sources", "Sources"]];
   const isResolved = (h) => h.self_status === "resolved" || h.status === "resolved";
-  const stateOf = (h) => (h.checkPassed ? "check" : isResolved(h) ? "understood" : "open");
-  const STATE = { open: ["Unresolved", "st-open"], understood: ["You said you got it", "st-ok"], check: ["Check passed", "st-check"] };
+  const stateOf = (h) => (h.checkPassed ? "check" : isResolved(h) ? "understood" : (h.self_status || h.status) === "later" ? "later" : "open");
+  const STATE = { open: ["Unresolved", "st-open"], later: ["Saved for later", "st-open st-later"], understood: ["You said you got it", "st-ok"], check: ["Check passed", "st-check"] };
   const stateChip = (h) => { const [t, c] = STATE[stateOf(h)]; return `<span class="mm-state ${c}"><span class="st-mark" aria-hidden="true"></span>${t}</span>`; };
 
   async function workspace(app, args, params) {
@@ -198,7 +196,7 @@
       $("#wsNav").innerHTML = `
         <a class="ws-back" href="#/"><span aria-hidden="true">←</span> All classes</a>
         <div class="ws-course">${Lost.courseArt(c.art, c.id)}<p><span class="cc-code">${esc(c.code)}</span><span class="ws-cname">${esc(c.name)}</span></p></div>
-        <ul class="ws-links" style="--cols:${sections().length <= 4 ? sections().length : 3}">${sections().map((k) => `<li><a class="ws-link${k === W.section ? " on" : ""}${k === "live" && d.active ? " is-live" : ""}" href="${href(k)}"${k === W.section ? ' aria-current="page"' : ""}>
+        <ul class="ws-links" style="--cols:${sections().length <= 4 ? sections().length : 3};--n:${sections().length}">${sections().map((k) => `<li><a class="ws-link${k === W.section ? " on" : ""}${k === "live" && d.active ? " is-live" : ""}" href="${href(k)}"${k === W.section ? ' aria-current="page"' : ""}>
           ${icon(k)}<span class="ws-label"><span class="ws-long">${LABEL[k]}</span><span class="ws-short" aria-hidden="true">${SHORT[k]}</span>${sub[k] ? `<span class="ws-sub">${k === "live" && d.active ? '<span class="dot live" aria-hidden="true"></span> ' : ""}${esc(sub[k])}</span>` : ""}</span>
           ${k === "moments" && open ? `<span class="ws-count" aria-hidden="true">${open}</span>` : ""}</a></li>`).join("")}</ul>`;
     }
@@ -742,6 +740,10 @@
           <button class="primary" id="explainCurrent">${H.phrases.length ? "Explain the current topic" : "Get help"}</button>
           <button id="explainEarlier">It started earlier</button>
         </div>
+        <div class="later-row">
+          <button id="saveLater" class="later-btn">Save for later</button>
+          <span class="note">Keep listening now. The help waits in My moments.</span>
+        </div>
         <details class="optional"><summary>Ask your own question</summary>
           <label for="q" class="visually-hidden">Your question</label><input id="q" maxlength="300" placeholder="What does … mean?">
         </details>`;
@@ -750,6 +752,27 @@
       $("#help").querySelector(".phrase[data-now]")?.addEventListener("click", () => explain("current", null, { text: H.now }));
       $("#explainCurrent").onclick = () => explain($("#q").value.trim() ? "question" : "current");
       $("#explainEarlier").onclick = () => explain("earlier");
+      $("#saveLater").onclick = () => saveLater();
+    }
+
+    // "Save for later": the student keeps listening. The moment is kept as unresolved ("later"),
+    // its help is still written in the background, and it waits in My moments with the help ready.
+    async function saveLater() {
+      const ev = H.ev; if (!ev) return;
+      const picked = H.picked;
+      H.seq++; // a help request still running for this moment won't open the panel
+      if (!H.cards.length) {
+        const q = $("#q")?.value.trim() || null;
+        const body = picked?.idx != null ? { kind: "explain", anchor: "phrase", line: picked.idx } : { kind: "explain", anchor: q ? "question" : "current", line: null, question: q };
+        api(`/api/student/events/${ev.id}/help`, { method: "POST", body }).catch(() => {}); // stored on the server, shown when they open it
+      }
+      try { await api(`/api/student/events/${ev.id}/status`, { method: "POST", body: { status: "later" } }); }
+      catch (e) { toast(e.message, "error"); return; }
+      const m = st.mine.find((x) => x.id === ev.id); if (m) m.self_status = "later";
+      setHelp("closed");
+      box.querySelectorAll(".tline.picked").forEach((p) => p.classList.remove("picked"));
+      $("#lost").focus({ preventScroll: true });
+      snack("Saved for later. It's in My moments with its help.", "Open now", () => openMoment(ev.id));
     }
 
     async function explain(anchor, line = null, picked = null) {
@@ -759,7 +782,7 @@
       box.querySelectorAll(".tline.picked").forEach((p) => p.classList.remove("picked"));
       if (line != null) box.querySelector(`.tline[data-idx="${line}"]`)?.classList.add("picked");
       H.title = "Getting help…"; $("#helpH").textContent = H.title;
-      $("#help").innerHTML = `${H.picked ? `<p class="picked-quote">"${esc(H.picked.text)}"</p>` : ""}<div class="skeleton" aria-hidden="true"><span></span><span></span><span></span></div><p class="note help-wait">Reading the lecture and notes…</p>`;
+      $("#help").innerHTML = `${H.picked ? `<p class="picked-quote">"${esc(H.picked.text)}"</p>` : ""}<div class="skeleton" aria-hidden="true"><span></span><span></span><span></span></div><p class="note help-wait">Reading the lecture and notes…</p><button class="later-btn" data-h="later">Save for later instead</button>`;
       setHelp("open");
       const r = await request(body);
       if (seq !== H.seq) return; // a newer tap replaced this one
@@ -779,13 +802,16 @@
       $("#helpH").textContent = H.title;
       $("#help").innerHTML = `${H.cards.map((c, i) => cardHtml(c, i)).join("")}
         <div class="help-actions" id="helpActions">
+          ${st.ai ? `<button data-h="check">Quick check</button>` : ""}
           <button class="primary" data-h="helped">Got it</button>
+          <button class="later-btn" data-h="later">Save for later</button>
           <div class="more-help" role="group" aria-label="More help">
             <button data-h="still">Still confused</button>
             ${st.ai ? `<button data-h="retry">Another way</button>` : ""}
             <button data-h="catchup">Catch me up</button>
           </div>
         </div>
+        <div id="checkBox" aria-live="polite"></div>
         <div id="catchupBox" aria-live="polite"></div>
         <p class="note since" id="sinceTap"></p>
         <button class="quiet back-live" data-h="backlive">Back to live</button>`;
@@ -862,7 +888,21 @@
 
     async function action(kind, btn) {
       if (kind === "helped") return gotIt();
+      if (kind === "later") return saveLater();
       if (kind === "backlive") { setHelp("min"); jumpLive(); return; }
+      if (kind === "check") {
+        // One question on a new example of the same idea, graded on the server, before the student says "Got it".
+        btn.disabled = true; btn.textContent = "Writing a question…";
+        try {
+          const k = await api(`/api/student/events/${H.ev.id}/check`, { method: "POST" });
+          $("#checkBox").innerHTML = `<form class="check live-check" data-check="${k.id}"><fieldset><legend><span class="lesson-kicker">Quick check</span> ${esc(k.question)}</legend>
+            ${k.choices.map((ch, j) => `<label class="choice"><input type="radio" name="c-${k.id}" value="${j}"> ${esc(ch)}</label>`).join("")}</fieldset>
+            <div class="row"><button class="primary">Answer</button></div><p class="check-result" aria-live="polite"></p></form>`;
+          $("#checkBox").scrollIntoView({ block: "nearest" });
+          btn.textContent = "Quick check";
+        } catch (x) { toast(x.message, "error"); btn.disabled = false; btn.textContent = "Quick check"; }
+        return;
+      }
       if (kind === "again") return explain("current");
       if (kind === "retry" || kind === "still") {
         const ask = kind === "still" ? "simpler" : kind;
@@ -897,7 +937,7 @@
     // ---------- My moments (this class) ----------
     $("#momentsBtn").onclick = async () => {
       const v = await Lost.dialog({ opener: $("#momentsBtn"), title: "My moments in this class",
-        body: st.mine.length ? `<p class="note">Only you see these. Open one to read its help again.</p><ul class="moments">${st.mine.map((m) => `<li><button value="${esc(m.id)}" class="moment-btn" form="dlgForm"><time>${fmt(m.t)}</time><span>${esc(m.topic || "Your moment")}</span><span class="badge ${m.self_status === "resolved" ? "good" : ""}">${m.self_status === "resolved" ? "Understood" : m.self_status === "still" ? "Still confused" : "Open"}</span></button></li>`).join("")}</ul>`
+        body: st.mine.length ? `<p class="note">Only you see these. Open one to read its help again.</p><ul class="moments">${st.mine.map((m) => `<li><button value="${esc(m.id)}" class="moment-btn" form="dlgForm"><time>${fmt(m.t)}</time><span>${esc(m.topic || "Your moment")}</span><span class="badge ${m.self_status === "resolved" ? "good" : ""}">${m.self_status === "resolved" ? "Understood" : m.self_status === "still" ? "Still confused" : m.self_status === "later" ? "Saved for later" : "Open"}</span></button></li>`).join("")}</ul>`
           : `<p>No moments yet. Tap I'm lost, or a line in the transcript, when something loses you.</p>`,
         buttons: [{ value: "", label: "Close", kind: "primary", focus: !st.mine.length }] });
       if (v) openMoment(v);

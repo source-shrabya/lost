@@ -22,6 +22,7 @@ const jobs = await import("./lib/jobs.js");
 const summary = await import("./lib/summary.js");
 const help = await import("./lib/help.js");
 const live = await import("./lib/live.js");
+const crowd = await import("./lib/crowd.js");
 const img = await import("./lib/illustrate.js");
 const { sessionTheme, courseArt, cleanArt, autoArt, ART_IDS, ART } = await import("./lib/theme.js");
 const { startEngine, engine } = await import("./engines.js");
@@ -186,6 +187,7 @@ route("POST", "/api/auth/start", (ctx, b) => {
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) fail(400, "Enter your school email.");
   const inst = one("SELECT id FROM institutions WHERE id = ?", String(b.institution || "")) || fail(400, "Pick your university.");
   const u = one("SELECT * FROM users WHERE email = ?", email);
+  if (u?.demo && email.endsWith("@sim.lost")) fail(403, "That's a simulated student, used only in demos.");
   if (u?.role === "professor") {
     if (!b.password) return { needPassword: true };
     if (!allowed(`login:${email}`, 0.1, 6)) fail(429, "Too many sign-in attempts. Wait a minute.");
@@ -451,14 +453,33 @@ route("GET", "/api/prof/sessions/:id/live", (ctx) => {
     marks: Object.fromEntries([...marks].filter(([i]) => i >= Math.max(0, since - 200))),
     taps: all("SELECT t FROM confusion_events WHERE session_id = ? ORDER BY t", s.id).map((x) => x.t),
     present: live.presentCount(s.id), lostNow: recent,
+    clusters: s.status === "live" || s.status === "ending" ? crowd.liveClusters(s, clock) : [],
+    bots: crowd.BOTS_ON ? { on: true, running: crowd.botsRunning(s.id) } : null,
     gaps: all("SELECT from_t, to_t, reason FROM transcript_gaps WHERE session_id = ? ORDER BY from_t", s.id),
     ...statusBlock(s.id),
   };
 });
-route("POST", "/api/prof/sessions/:id/start", (ctx) => {
+// The professor is going over a live cluster again; saved as a note so the report shows it.
+route("POST", "/api/prof/sessions/:id/clusters/:line/revisit", (ctx) => {
+  const u = needUser(ctx, "professor");
+  const s = ownSession(u, ctx.params.id);
+  if (!crowd.markRevisited(s, Number(ctx.params.line), live.sessionClock(s))) fail(404, "That group isn't there any more.");
+  return { ok: true };
+});
+// Demo only (LOST_DEMO_BOTS=1): fill the room with simulated students and have some of them tap a line.
+route("POST", "/api/prof/sessions/:id/demo-bots", (ctx, b) => {
+  const u = needUser(ctx, "professor");
+  const s = ownSession(u, ctx.params.id);
+  if (!crowd.BOTS_ON) fail(404, "Simulated students are off on this server.");
+  try { return crowd.runBots(s, { room: Math.min(40, Number(b.room) || 20), tappers: Math.min(12, Math.max(3, Number(b.tappers) || 6)), line: Number.isInteger(b.line) ? b.line : null }); }
+  catch (e) { fail(409, e.message); }
+});
+route("POST", "/api/prof/sessions/:id/start", (ctx, b) => {
   const u = needUser(ctx, "professor");
   const s = ownSession(u, ctx.params.id);
   if (s.status === "ended") fail(409, "This class has ended. Start a new session.");
+  // The topic can still be set or changed on the class screen right up to Start.
+  if (s.status === "ready" && typeof b?.title === "string") run("UPDATE lecture_sessions SET title = ? WHERE id = ?", b.title.trim().slice(0, 120), s.id);
   live.startSession(s.id);
   return { ok: true, status: one("SELECT status FROM lecture_sessions WHERE id = ?", s.id).status };
 });
@@ -636,7 +657,7 @@ route("GET", "/api/student/courses/:id", (ctx) => {
   const sessions = all(`SELECT s.id, s.title, s.status, s.started_at, s.ended_at, ss.status summary, ss.published,
       (SELECT COUNT(*) FROM confusion_events e WHERE e.session_id = s.id AND e.student_id = ?) my_taps
     FROM lecture_sessions s LEFT JOIN session_summaries ss ON ss.session_id = s.id WHERE s.section_id = ? AND s.status != 'ready' ORDER BY s.created_at DESC LIMIT 40`, u.id, c.section_id);
-  const history = all(`SELECT e.id, e.session_id, e.t, e.topic, e.category, e.self_status, e.interim_text, s.started_at, s.title session_title,
+  const history = all(`SELECT e.id, e.session_id, e.t, e.topic, e.category, ${SHOWN_STATUS} self_status, e.interim_text, s.started_at, s.title session_title,
       (SELECT text FROM transcript_lines l WHERE l.session_id = e.session_id AND l.idx = COALESCE(e.anchor_line, e.line_idx)) line
     FROM confusion_events e JOIN lecture_sessions s ON s.id = e.session_id
     WHERE e.student_id = ? AND s.course_id = ? ORDER BY e.created_at DESC LIMIT 30`, u.id, c.id).map((h) => {
@@ -671,7 +692,7 @@ route("GET", "/api/student/sessions/:id/live", (ctx) => {
     audio: r.relay.header ? { id: r.relay.id, seq: r.relay.seq } : null,
     ai: aiAvailable(),
     theme: sessionTheme(s.id),
-    mine: all("SELECT id, t, self_status, topic FROM confusion_events WHERE session_id = ? AND student_id = ? ORDER BY t", s.id, u.id),
+    mine: all(`SELECT e.id, e.t, ${SHOWN_STATUS} self_status, e.topic FROM confusion_events e WHERE e.session_id = ? AND e.student_id = ? ORDER BY e.t`, s.id, u.id),
   };
 });
 route("GET", "/api/student/sessions/:id/audio", async (ctx) => {
@@ -728,14 +749,19 @@ route("POST", "/api/student/events/:id/help", async (ctx, b) => {
   if (Number(b.attempt) > max) fail(429, kind === "catchup" ? "That's the most catch-ups for one moment." : "That's the most re-explanations for one moment. Your professor will see this spot stayed unclear.");
   return await help.requestHelp(ev, kind, attempt);
 });
+// What the student sees: "later" while a saved-for-later moment is still unresolved.
+const SHOWN_STATUS = "CASE WHEN e.saved_later = 1 AND e.self_status != 'resolved' THEN 'later' ELSE e.self_status END";
 route("POST", "/api/student/events/:id/status", (ctx, b) => {
   const u = needUser(ctx, "student");
   const ev = ownEvent(u, ctx.params.id);
-  // resolved = the student said they understand; still = asked for more; open = undo. Closing the
+  // resolved = the student said they understand; still = asked for more; later = saved to come back to
+  // after class (still unresolved); open = undo. Closing the
   // help panel never calls this, so dismissing help never counts as understanding.
-  const st = ["resolved", "still", "open"].includes(b.status) ? b.status : fail(400, "Unknown status.");
-  run("UPDATE confusion_events SET self_status = ?, resolved_at = ? WHERE id = ?", st, st === "resolved" ? now() : null, ev.id);
-  return { ok: true, previous: ev.self_status, status: st };
+  const st = ["resolved", "still", "later", "open"].includes(b.status) ? b.status : fail(400, "Unknown status.");
+  const previous = ev.saved_later && ev.self_status !== "resolved" ? "later" : ev.self_status;
+  if (st === "later") run("UPDATE confusion_events SET saved_later = 1, resolved_at = NULL, self_status = CASE WHEN self_status = 'resolved' THEN 'open' ELSE self_status END WHERE id = ?", ev.id); // also Undo of a Got it on a saved moment
+  else run("UPDATE confusion_events SET self_status = ?, resolved_at = ?, saved_later = ? WHERE id = ?", st, st === "resolved" ? now() : null, st === "open" ? 0 : ev.saved_later, ev.id);
+  return { ok: true, previous, status: st };
 });
 // ---------- AI illustrations (on request, one per card, cached) ----------
 // Allowed: the student who asked for the card, or the professor who owns its course.
@@ -785,7 +811,7 @@ route("GET", "/api/student/events/:id", (ctx) => {
   const anchor = ev.anchor_line ?? ev.line_idx;
   const s = one("SELECT id, course_id, title, status, started_at FROM lecture_sessions WHERE id = ?", ev.session_id);
   return {
-    event: { id: ev.id, t: ev.t, line_idx: ev.line_idx, status: ev.self_status, topic: ev.topic || "", question: ev.question || "", interim: ev.interim_text || "" },
+    event: { id: ev.id, t: ev.t, line_idx: ev.line_idx, status: ev.saved_later && ev.self_status !== "resolved" ? "later" : ev.self_status, topic: ev.topic || "", question: ev.question || "", interim: ev.interim_text || "" },
     session: s,
     line: anchor != null ? one("SELECT idx, t, text FROM transcript_lines WHERE session_id = ? AND idx = ?", ev.session_id, anchor) : null,
     // What was said around the moment: three lines before and two after (only lines already spoken).

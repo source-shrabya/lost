@@ -58,15 +58,11 @@
           <div class="hc-head"><h2 id="hcTitle">Your courses</h2><span class="note">${courses.length} course${courses.length === 1 ? "" : "s"}</span></div>
           <ul class="mini-grid">${sorted.map(profMini).join("")}</ul></section>` : ""}
     </div></div>`;
-    $("#homeStart")?.addEventListener("submit", async (e) => {
+    // "Set up class" opens the course's start card, where the topic and lecture materials are chosen.
+    $("#homeStart")?.addEventListener("submit", (e) => {
       e.preventDefault();
       const [cid, sectionId] = $("#startSec").value.split("|");
-      const btn = e.submitter; if (btn) btn.disabled = true;
-      try {
-        const r = await api(`/api/prof/courses/${cid}/sessions`, { method: "POST", body: { sectionId, title: "", materialIds: [] } });
-        if (r.resumed) toast("That section already has an open class, so Lost opened it.");
-        location.hash = `#/live/${r.id}`;
-      } catch (err) { toast(err.message, "error"); if (btn) btn.disabled = false; }
+      location.hash = `#/course/${cid}/class?sec=${encodeURIComponent(sectionId)}`;
     });
   }
   // Small course card for the welcome page.
@@ -211,7 +207,7 @@
   };
   const pico = (k) => `<svg class="ws-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${PICO[k]}</svg>`;
 
-  async function coursePage(app, [id, view = "class"]) {
+  async function coursePage(app, [id, view = "class"], params = {}) {
     const d = await api(`/api/prof/courses/${id}`);
     const c = d.course;
     const open = d.sessions.find((s) => ["ready", "live", "ending"].includes(s.status));
@@ -231,7 +227,7 @@
       </nav>
       <div class="ws-main" id="view"></div></div>`;
     const v = $("#view");
-    if (view === "class") return classView(v, d);
+    if (view === "class") return classView(v, d, params.sec);
     if (view === "lost") return confusionView(v, d);
     v.innerHTML = `<div class="page-head"><h1>${esc(views.find(([k]) => k === view)?.[1] || "")}</h1></div><div id="viewBody"></div>`;
     const body = $("#viewBody");
@@ -242,7 +238,7 @@
   const sourceLabel = (src) => src === "demo" ? "Demo Canvas" : src === "canvas" ? "From Canvas" : src === "upload" ? "Uploaded" : src === "notes" ? "Pasted notes" : "Set up by hand";
 
   // The class tab: one card to start today's class, then a few facts and the last classes.
-  function classView(v, d) {
+  function classView(v, d, preSec = "") {
     const c = d.course;
     const open = d.sessions.find((s) => ["ready", "live", "ending"].includes(s.status));
     const ended = d.sessions.filter((s) => s.status === "ended");
@@ -258,9 +254,9 @@
         <p class="sc-kicker">${esc(today)}</p>
         <h1 id="scTitle">${open ? "Set up another section" : `Start ${esc(c.code)}`}</h1>
         <form id="newSession" class="sc-form">
-          ${d.sections.length > 1 ? `<fieldset><legend>Section</legend><div class="pill-row">${d.sections.map((s, i) => `<label class="pill-opt"><input type="radio" name="sec" value="${s.id}" ${i === 0 ? "checked" : ""}><span>${esc(s.name)} · ${s.students} students</span></label>`).join("")}</div></fieldset>`
+          ${d.sections.length > 1 ? `<fieldset><legend>Section</legend><div class="pill-row">${d.sections.map((s, i) => `<label class="pill-opt"><input type="radio" name="sec" value="${s.id}" ${(preSec && d.sections.some((x) => x.id === preSec) ? s.id === preSec : i === 0) ? "checked" : ""}><span>${esc(s.name)} · ${s.students} students</span></label>`).join("")}</div></fieldset>`
             : `<input type="hidden" name="sec" value="${d.sections[0]?.id || ""}"><p class="sc-one">${esc(d.sections[0]?.name || "")} · ${d.sections[0]?.students || 0} students</p>`}
-          <div class="home-join sc-topic"><label for="ltitle">Today's topic</label><input id="ltitle" placeholder="Today's topic (optional)"><button class="button gold" type="submit">Set up class</button></div>
+          <div class="home-join sc-topic"><label for="ltitle">Today's topic</label><input id="ltitle" placeholder="Today's topic, for example: The 2008 financial crisis" ${open ? "" : "autofocus"}><button class="button gold" type="submit">Set up class</button></div>
           ${usable.length ? `<fieldset><legend>Materials the AI should use first <span class="note">(optional)</span></legend><div class="pill-row">${usable.map((m) => `<label class="pill-opt"><input type="checkbox" name="mat" value="${m.id}"><span>${esc(m.title)}${m.visibility === "staff" ? " · professor only" : ""}</span></label>`).join("")}</div></fieldset>`
             : `<p class="note">No materials yet. <a href="#/course/${c.id}/materials">Add slides or notes</a> so explanations quote your class.</p>`}
           <p class="note sc-note">Setting up doesn't start recording. You press Start on the next screen.</p>
@@ -297,9 +293,10 @@
     const moment = (k, m) => `<li class="cf-moment">
         <div class="cf-m-head"><span class="cf-time">${mmss(m.start)}</span><b>${esc(m.topic || "Topic not named yet")}</b>
           <span class="cf-badges"><span class="mc-flag">${m.taps} tap${m.taps === 1 ? "" : "s"}</span>${m.small ? `<span class="mc-flag" title="Fewer than 3 students, so who and how many stay hidden">Small group</span>`
-            : `${m.students != null ? `<span class="mc-flag">${m.students} students</span>` : ""}${m.unresolved ? `<span class="mc-flag open">${m.unresolved} still lost</span>` : ""}${m.resolved ? `<span class="mc-flag good">${m.resolved} cleared</span>` : ""}`}</span></div>
+            : `${m.students != null ? `<span class="mc-flag">${m.students} students</span>` : ""}${m.unresolved ? `<span class="mc-flag open">${m.unresolved} still lost</span>` : ""}${m.resolved ? `<span class="mc-flag good">${m.resolved} cleared</span>` : ""}${m.simulated ? `<span class="mc-flag">Demo: ${m.simulated} simulated</span>` : ""}`}</span></div>
         ${m.lines.length ? `<ul class="cf-lines">${m.lines.slice(0, 3).map((l) => `<li><q>${esc(l.text || "")}</q><span class="note">${l.taps} tap${l.taps === 1 ? "" : "s"} on this line</span></li>`).join("")}</ul>` : `<p class="note">They tapped "I'm lost" without picking a line.</p>`}
-        ${(() => { const ns = k.notes.filter((n) => n.moment_idx === m.index); return ns.length ? `<p class="cf-note"><span>Your note</span> ${esc(ns[ns.length - 1].text)}</p>` : ""; })()}
+        ${(() => { const ns = k.notes.filter((n) => n.moment_idx === m.index); if (!ns.length) return ""; const n = ns[ns.length - 1], live = n.kind === "revisit" && /^line \d+: /.test(n.text);
+          return `<p class="cf-note"><span>${live ? "Went over it in class" : "Your note"}</span> ${esc(live ? n.text.replace(/^line \d+: /, "") : n.text)}</p>`; })()}
       </li>`;
     v.innerHTML = `
       <div class="page-head"><h1>Where they got lost</h1></div>
@@ -492,10 +489,13 @@
       <section class="join-panel" id="joinPanel">
         <div><p class="sign-label">How students join</p><p class="join-head">Students in the room get a Join button</p>
           <p class="note">${info.section.students} student${info.section.students === 1 ? "" : "s"} in ${esc(info.section.name)}. When you press Start, every student on your list who is in this room sees "Join class" on their phone or laptop. No code, no QR, nothing to type.</p>
+          ${info.session.status === "ready" ? `<label class="start-topic"><span>Today's topic</span><input id="startTopic" maxlength="120" value="${esc(info.session.title || "")}" placeholder="For example: The 2008 financial crisis"></label>` : ""}
           <div class="row"><button class="primary big" id="startBtn">Start class</button><button id="discard" class="quiet">Discard</button></div>
           <p class="note">Start turns on your mic. Your words become the transcript.</p></div>
       </section>
+      <div id="botBar" class="bot-bar" hidden></div>
       <div class="teach" id="teach">
+        <section id="clusters" class="clusters" aria-live="polite" aria-label="Groups of students lost on the same part"></section>
         <section class="panel transcript-panel">
           <div class="mic-bar">
             <button id="mic" class="micbtn" aria-pressed="false" aria-describedby="micHint" title="Turn microphone on or off (Space or M)">
@@ -544,7 +544,7 @@
     };
     paintPhase();
     $("#discard").onclick = async (e) => { if (!Lost.confirmButton(e.target, "Click again to discard")) return; await api(`/api/prof/sessions/${sid}/end`, { method: "POST" }); location.hash = `#/course/${info.course.id}`; };
-    $("#startBtn").onclick = async () => { const r = await api(`/api/prof/sessions/${sid}/start`, { method: "POST" }); S.status = r.status; paintPhase(); startMic(); };
+    $("#startBtn").onclick = async () => { const r = await api(`/api/prof/sessions/${sid}/start`, { method: "POST", body: { title: $("#startTopic")?.value ?? null } }); S.status = r.status; paintPhase(); startMic(); };
     $("#showCode").onclick = () => $("#codeDlg").showModal();
     // Ending always goes through the dialog; nothing ends class in one keystroke.
     const endClass = async () => {
@@ -620,12 +620,52 @@
       if ((d.lines.length || d.full || marksChanged) && !editing) paintTranscript();
       if (transcriberMode === "server") $("#interim").textContent = d.interim;
       $("#strip").innerHTML = tapStrip(d.taps, d.clock, d.gaps);
+      paintClusters(d.clusters || []);
+      paintBots(d.bots, d.status);
       $("#diag").innerHTML = `<dl class="diag-list">
         <dt>Microphone</dt><dd>${mic.listening ? "On" : "Off"}${mic.err ? ` · ${esc(mic.err)}` : ""}</dd>
         <dt>Transcription</dt><dd>${esc(d.transcription.name)}${d.transcription.status ? ` · ${esc(d.transcription.status)}` : ""}</dd>
         <dt>AI help</dt><dd>${d.ai.available ? `On (${esc(d.ai.model || d.ai.provider)})` : "Off: students get the transcript excerpt and matching course materials instead of AI explanations."}</dd>
         <dt>Transcript gaps</dt><dd>${d.gaps.length ? d.gaps.map((g) => `${fmt(g.from_t)}-${g.to_t == null ? "now" : fmt(g.to_t)} (${esc(g.reason)})`).join("; ") : "None"}</dd></dl>`;
     });
+    // ---------- live groups: several students lost on the same part ----------
+    let clusterSig = "";
+    function paintClusters(list) {
+      const sig = JSON.stringify(list.map((c) => [c.id, c.students, c.topic, c.gist, c.flow, c.say, c.thinking, c.revisited, c.questions.length]));
+      if (sig === clusterSig) return; clusterSig = sig;
+      $("#clusters").innerHTML = list.map((c) => `<article class="cluster${c.revisited ? " done" : ""}">
+        <header class="cl-head"><span class="cl-count"><b>${c.students}</b> students lost on the same part</span><span class="note">since ${fmt(c.since)} · ${c.taps} tap${c.taps === 1 ? "" : "s"}</span>
+          ${c.simulated ? `<span class="badge warn cl-sim">Demo: ${c.simulated} simulated student${c.simulated === 1 ? "" : "s"}</span>` : ""}</header>
+        <h3 class="cl-topic">${c.topic ? esc(c.topic) : c.thinking ? "Reading their questions…" : "Several students marked this line"}</h3>
+        ${c.topic ? `<p class="cl-ai">AI reading of the marked line and the students' questions</p>` : ""}
+        ${c.gist ? `<p class="cl-gist">${esc(c.gist)}</p>` : ""}
+        ${c.line ? `<blockquote class="cl-line"><time>${fmt(c.line.t)}</time> ${esc(c.line.text)}</blockquote>` : ""}
+        ${c.questions.length ? `<ul class="cl-qs">${c.questions.map((q) => `<li>${esc(q)}</li>`).join("")}</ul>` : ""}
+        ${c.flow.length ? `<div class="cl-flow"><p class="cl-label">One way to re-explain</p><ol>${c.flow.map((f) => `<li>${esc(f)}</li>`).join("")}</ol></div>` : ""}
+        ${c.say ? `<p class="cl-say"><span class="cl-label">Try opening with</span> "${esc(c.say)}"</p>` : ""}
+        <div class="cl-act">${c.revisited ? `<span class="badge good">You're going over it · noted in the report</span>` : `<button class="gold" data-revisit="${c.id}">I'm going over it now</button>`}</div>
+      </article>`).join("");
+    }
+    $("#clusters").addEventListener("click", async (e) => {
+      const b = e.target.closest("[data-revisit]"); if (!b) return;
+      b.disabled = true;
+      try { await api(`/api/prof/sessions/${sid}/clusters/${b.dataset.revisit}/revisit`, { method: "POST" }); clusterSig = ""; toast("Noted. The report will show you went over it."); }
+      catch (x) { toast(x.message, "error"); b.disabled = false; }
+    });
+    function paintBots(b, status) {
+      const bar = $("#botBar");
+      if (!b?.on || status !== "live") { bar.hidden = true; return; }
+      if (!bar.hidden && bar.dataset.running === String(b.running)) return;
+      bar.hidden = false; bar.dataset.running = String(b.running);
+      bar.innerHTML = `<span class="badge warn">Demo</span><span>Simulated students${b.running ? " are in the room" : ""}</span>
+        <button id="botGo" class="tool">Fill the room to 20 and have 6 simulated students tap the newest line</button>`;
+      $("#botGo").onclick = async (e) => {
+        e.target.disabled = true;
+        try { const r = await api(`/api/prof/sessions/${sid}/demo-bots`, { method: "POST", body: { room: 20, tappers: 6 } }); toast(`${r.tapping} simulated students are tapping line ${r.line + 1}.`); }
+        catch (x) { toast(x.message, "error"); }
+        finally { e.target.disabled = false; }
+      };
+    }
     function paintTranscript() {
       const box = $("#transcript");
       const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
@@ -790,10 +830,12 @@
     return `<article class="moment">
       <h3><span class="at">${fmt(m.start)}${m.end - m.start > 1 ? `-${fmt(m.end)}` : ""}</span>${m.topic ? `${esc(m.topic)} <span class="badge" title="Label written by the AI from the transcript">inferred</span>` : "Students tapped here"}</h3>
       <p class="note">${m.taps} tap${m.taps === 1 ? "" : "s"} · ${m.small ? "fewer than 3 students (details hidden so no one is singled out)" : `${m.students} students · ${m.resolved} resolved, ${m.unresolved} not yet`}</p>
-      ${m.categories ? `<p class="note">${Object.entries(m.categories).map(([k, v]) => `${esc(catName(k))}: ${v}`).join(" · ")}</p>` : ""}
+      ${m.simulated ? `<p><span class="badge warn">Demo: ${m.simulated} simulated student${m.simulated === 1 ? "" : "s"}</span></p>` : ""}
+      ${m.categories ? `<p class="note">What they said lost them: ${Object.entries(m.categories).map(([k, v]) => `${esc(catName(k))} (${v})`).join(", ")}</p>` : ""}
       ${m.lines.length ? `<div class="excerpt"><span class="label">What you were saying</span>${m.lines.map((l) => `<p><time>${fmt(l.t)}</time>"${esc(l.text)}" <b class="note">${l.taps} tap${l.taps === 1 ? "" : "s"}</b></p>`).join("")}</div>` : `<p class="note">Nothing was transcribed right before these taps.</p>`}
       ${m.topicEvidence?.length ? `<details><summary>Evidence for the inferred topic</summary>${Lost.sources(m.topicEvidence, "Transcript lines the AI used")}</details>` : ""}
-      ${notes.length ? `<ul class="plain notes">${notes.map((n) => `<li><span class="badge">${n.kind === "revisit" ? "To revisit" : n.kind === "clarification" ? "Draft" : "Suggestion"}</span> ${esc(n.text)}</li>`).join("")}</ul>` : ""}
+      ${notes.length ? `<ul class="plain notes">${notes.map((n) => { const live = n.kind === "revisit" && /^line \d+: /.test(n.text);
+        return `<li><span class="badge${live ? " good" : ""}">${live ? "Went over it in class" : n.kind === "revisit" ? "To revisit" : n.kind === "clarification" ? "Draft" : "Suggestion"}</span> ${esc(live ? n.text.replace(/^line \d+: /, "") : n.text)}</li>`; }).join("")}</ul>` : ""}
       <div class="row actions">
         <button data-act="material" data-m="${m.index}">View related material</button>
         <button data-act="revisit" data-m="${m.index}">Revisit this topic</button>

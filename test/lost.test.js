@@ -677,6 +677,11 @@ test("Got it resolves and can be undone; closing help doesn't resolve; moments s
   assert.equal(reopened.event.status, "resolved"); assert.ok(reopened.cards.length >= 1, "the explanation is kept for later");
   await jordan.post(`/api/student/events/${ev.id}/status`, { status: got.previous }); // Undo
   assert.equal(db.one("SELECT self_status, resolved_at FROM confusion_events WHERE id = ?", ev.id).self_status, "open");
+  // "Save for later" keeps the moment unresolved, with its help ready to open after class
+  assert.equal((await jordan.post(`/api/student/events/${ev.id}/status`, { status: "later" })).data.status, "later");
+  const later = (await jordan.get(`/api/student/events/${ev.id}`)).data;
+  assert.equal(later.event.status, "later"); assert.ok(later.cards.length >= 1);
+  await jordan.post(`/api/student/events/${ev.id}/status`, { status: "open" });
   // another student can't read or change it
   assert.equal((await riley.get(`/api/student/events/${ev.id}`)).status, 404);
   assert.equal((await riley.post(`/api/student/events/${ev.id}/status`, { status: "resolved" })).status, 404);
@@ -925,4 +930,31 @@ test("AI illustrations: on request, only for analogies, prompt stays on the serv
   img.setFetchForTests(null);
   await rivera.post(`/api/prof/sessions/${sid}/end`);
   ai.setFakeProvider(null);
+});
+
+test("live groups: the professor sees a group only from 3 students, and simulated students are counted", async () => {
+  const rivera = await as("prof");
+  const { sid } = await liveSession(rivera);
+  live.addLine(sid, "Banks lend less when their cushion shrinks.");
+  live.addLine(sid, "Businesses found borrowing harder.");
+  const line = db.one("SELECT MAX(idx) m FROM transcript_lines WHERE session_id = ?", sid).m;
+  const tap = (uid, q) => db.run("INSERT INTO confusion_events (id, session_id, student_id, t, line_idx, anchor, anchor_line, question, created_at) VALUES (?, ?, ?, ?, ?, 'phrase', ?, ?, ?)",
+    db.newId(9), sid, uid, 5, line, line, q, db.now());
+  const mk = (email, demo) => { const id = db.newId(9); db.run("INSERT INTO users (id, email, name, role, demo, created_at) VALUES (?, ?, ?, 'student', ?, ?)", id, email, email, demo, db.now()); return id; };
+  const a = mk(`a-${sid}@x.edu`, 0), b = mk(`b-${sid}@sim.lost`, 1), c = mk(`c-${sid}@sim.lost`, 1);
+  tap(a, "Why would a bakery care?"); tap(b, "What does investment mean?");
+  let d = (await rivera.get(`/api/prof/sessions/${sid}/live`)).data;
+  assert.equal(d.clusters.length, 0, "two students: no group card");
+  tap(c, "How does this reach jobs?");
+  d = (await rivera.get(`/api/prof/sessions/${sid}/live`)).data;
+  assert.equal(d.clusters.length, 1);
+  assert.equal(d.clusters[0].students, 3); assert.equal(d.clusters[0].simulated, 2);
+  assert.equal(d.clusters[0].questions.length, 3);
+  assert.equal((await rivera.post(`/api/prof/sessions/${sid}/clusters/${d.clusters[0].id}/revisit`)).status, 200);
+  d = (await rivera.get(`/api/prof/sessions/${sid}/live`)).data;
+  assert.equal(d.clusters[0].revisited, true);
+  // a simulated student can never sign in
+  const r = await fetch(`${base}/api/auth/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: `b-${sid}@sim.lost`, institution: "usm" }) });
+  assert.equal(r.status, 403);
+  await rivera.post(`/api/prof/sessions/${sid}/end`);
 });

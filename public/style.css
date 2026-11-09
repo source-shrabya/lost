@@ -1341,3 +1341,78 @@ main, body.student main:has(.live2), body.student main:has(.dash) { max-width: v
 .join-head { margin: 2px 0 6px; font-size: clamp(24px, 3vw, 34px); font-weight: 800; line-height: 1.15; font-family: "Bricolage Grotesque", inherit; }
 :is(body.student, body.prof) .join-panel { background: var(--glass); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); box-shadow: var(--glass-shadow); border-radius: 24px; }
 @media (prefers-reduced-transparency: reduce) { :is(body.student, body.prof) .join-panel { background: var(--panel); -webkit-backdrop-filter: none; backdrop-filter: none; } }
+
+/* ---------- balance sheet visual ---------- */
+.v-bal-own { fill: color-mix(in srgb, var(--ink) 16%, transparent); stroke: color-mix(in srgb, var(--ink) 40%, transparent); }
+.v-bal-owe { fill: color-mix(in srgb, #4a78d8 26%, transparent); stroke: color-mix(in srgb, #4a78d8 70%, transparent); }
+.v-bal-cush { fill: var(--gold); stroke: #b88a00; }
+.v-bal-short { fill: none; stroke: var(--bad); stroke-dasharray: 4 3; }
+.v-bal-val { font-size: 12px; font-weight: 800; fill: var(--ink); }
+.v-bal-gold { fill: color-mix(in srgb, #9a6c00 80%, var(--ink)); }
+.v-bal-bad { fill: var(--bad); }
+.v-bal-in { font-size: 11px; font-weight: 600; fill: var(--ink); }
+.v-bal-label { font-size: 13px; font-weight: 800; fill: var(--ink); }
+.v-bal-arrow { font-size: 22px; fill: var(--soft); }
+.v-bal-key { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 13px; color: var(--soft); margin: 6px 0; }
+.v-bal-key .v-sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; border: 0; }
+.v-bal-sw-own { background: color-mix(in srgb, var(--ink) 22%, transparent); }
+.v-bal-sw-owe { background: color-mix(in srgb, #4a78d8 45%, transparent); }
+.v-bal-sw-cush { background: var(--gold); }
+.v-bal-meter { display: grid; gap: 6px; margin: 8px 0; }
+.v-bal-meter > div { display: grid; grid-template-columns: minmax(80px, auto) 1fr auto; align-items: center; gap: 10px; font-size: 14px; }
+.v-bal-track { height: 12px; border-radius: 999px; background: color-mix(in srgb, var(--ink) 8%, transparent); overflow: hidden; }
+.v-bal-track i { display: block; height: 100%; border-radius: inherit; background: var(--gold); }
+.v-bal-track i.bad { background: var(--bad); }
+.v-bal-take { font-weight: 600; }
+:root[data-theme="dark"] .v-bal-gold { fill: var(--gold); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .v-bal-gold { fill: var(--gold); } }
+
+/* ---------- live groups on the professor's class screen ---------- */
+.clusters { display: grid; gap: 12px; margin: 0 0 12px; }
+.clusters:empty { display: none; }
+.cluster { padding: 16px 20px; border-radius: 22px; border: 2px solid var(--gold); background: color-mix(in srgb, var(--gold) 12%, var(--glass, var(--panel)));
+  -webkit-backdrop-filter: var(--glass-blur, none); backdrop-filter: var(--glass-blur, none); box-shadow: var(--glass-shadow, none); animation: cl-in .35s ease-out; }
+.cluster.done { border-color: var(--good); background: color-mix(in srgb, var(--good) 8%, var(--glass, var(--panel))); }
+@keyframes cl-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .cluster { animation: none; } }
+.cl-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.cl-count { font-size: 15px; }
+.cl-count b { font-size: 22px; }
+.cl-sim { margin-left: auto; }
+.cl-topic { margin: 6px 0 0; font-size: clamp(22px, 2.6vw, 28px); line-height: 1.2; }
+.cl-ai { margin: 2px 0 0; font-size: 12px; color: var(--soft); }
+.cl-gist { margin: 8px 0 0; font-size: 17px; }
+.cl-line { margin: 10px 0 0; padding: 8px 12px; border-left: 4px solid var(--gold); background: color-mix(in srgb, var(--ink) 4%, transparent); border-radius: 0 12px 12px 0; font-size: 15px; }
+.cl-line time { font-weight: 800; color: var(--soft); margin-right: 6px; font-variant-numeric: tabular-nums; }
+.cl-qs { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.cl-qs li { font-size: 14px; padding: 4px 12px; border-radius: 999px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.cl-label { margin: 0; font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; color: var(--soft); }
+.cl-flow { margin-top: 12px; }
+.cl-flow ol { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.cl-flow li { padding: 6px 12px; border-radius: 12px; background: var(--glass-strong, var(--panel)); border: 1px solid var(--glass-edge, var(--rule)); font-weight: 600; font-size: 15px; }
+.cl-flow li + li::before { content: "→"; margin: 0 8px 0 -2px; color: var(--soft); font-weight: 400; }
+.cl-say { margin: 10px 0 0; font-size: 16px; }
+.cl-say .cl-label { margin-right: 6px; }
+.cl-act { margin-top: 12px; }
+.bot-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 12px; padding: 8px 14px; border: 1.5px dashed var(--warn); border-radius: 16px; font-size: 14px; }
+.bot-bar[hidden] { display: none; }
+.live-check { margin: 12px 0 0; padding: 12px 14px; border-radius: 16px; background: color-mix(in srgb, var(--ink) 4%, transparent); } .live-check legend { font-weight: 600; } .live-check .lesson-kicker { display: block; }
+.live2 { grid-template-rows: auto minmax(0, 1fr); } /* the header row keeps its own height; the transcript takes the rest */
+
+/* ---------- half-screen windows (about 500-900px): one row of course sections, compact picture ---------- */
+@media (min-width: 520px) and (max-width: 899px) {
+  .ws-links { grid-template-columns: repeat(var(--n, var(--cols, 3)), minmax(0, 1fr)); }
+  .ws-link { min-height: 48px; padding: 4px 2px; }
+  .ws-back { padding-block: 2px; }
+  body.student .live-top { background: transparent; }
+}
+.vis[data-vis="balance"] .v-bal { max-width: 400px; }
+@media (max-width: 899px) { .vis[data-vis="balance"] .v-bal { max-width: 340px; } }
+.start-topic { display: grid; gap: 4px; margin: 10px 0 12px; max-width: 520px; } .start-topic span { font-weight: 600; font-size: 14px; color: var(--soft); } .start-topic input { font-size: 18px; padding: 10px 14px; }
+
+/* Save for later: a quiet second choice beside "explain now" */
+.later-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line, rgba(127,127,127,.25)); }
+.later-row .note { margin: 0; }
+.later-btn::before { content: "\2691"; margin-right: 6px; } /* flag, same idea as My moments */
+.st-later { background: transparent; }
+.st-later .st-mark::before { content: "\2691"; }

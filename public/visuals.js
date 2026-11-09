@@ -171,6 +171,48 @@
     return `<svg viewBox="0 0 ${W} ${H}" class="v-svg v-seq" role="img" aria-label="Bars for each step: ${esc(vals.map(num).join(", "))}">${bars}</svg>`;
   }
 
+  // ---------- balance: owns vs owes, to scale, with the cushion Lost computed ----------
+  function balance(v) {
+    const money = (x) => { const a = esc(num(Math.round(Math.abs(x) * 100) / 100)); const u = esc(v.unit || ""); return `${x < 0 ? "−" : ""}${/^[^A-Za-z]{1,2}$/.test(v.unit || "") ? `${u}${a}` : `${a}${u ? ` ${u}` : ""}`}`; };
+    const n = v.states.length, W = 340, top = 26, PH = 150, gw = W / n, bw = Math.min(54, gw / 2 - 14);
+    const max = Math.max(...v.states.map((x) => Math.max(x.owns, x.owes)));
+    const sc = PH / max, base = top + PH;
+    const groups = v.states.map((x, i) => {
+      const cx = gw * i + gw / 2, ox = cx - bw - 5, dx = cx + 5;
+      const ho = x.owns * sc, hd = x.owes * sc, hc = x.cushion > 0 ? Math.max(5, x.cushion * sc) : 0;
+      const short = x.cushion < 0 ? `<rect x="${ox}" y="${base - hd}" width="${bw}" height="${hd - ho}" class="v-bal-short"/><text x="${ox + bw / 2}" y="${base - hd - 6}" class="v-bal-val v-bal-bad" text-anchor="middle">short ${money(-x.cushion)}</text>` : "";
+      return `<g>
+        <rect x="${ox}" y="${base - ho}" width="${bw}" height="${ho}" rx="3" class="v-bal-own"/>
+        <text x="${ox + bw / 2}" y="${base - ho - 6}" class="v-bal-val" text-anchor="middle">${money(x.owns)}</text>
+        <text x="${ox + bw / 2}" y="${base - 8}" class="v-bal-in" text-anchor="middle">Owns</text>
+        <rect x="${dx}" y="${base - hd}" width="${bw}" height="${hd}" rx="3" class="v-bal-owe"/>
+        <text x="${dx + bw / 2}" y="${base - 8}" class="v-bal-in" text-anchor="middle">Owes</text>
+        <text x="${dx + bw / 2}" y="${base - 22}" class="v-bal-in" text-anchor="middle">${money(x.owes)}</text>
+        ${hc ? `<rect x="${dx}" y="${base - hd - hc}" width="${bw}" height="${hc}" rx="2" class="v-bal-cush"/><text x="${dx + bw / 2}" y="${base - hd - hc - 6}" class="v-bal-val v-bal-gold" text-anchor="middle">${money(x.cushion)} cushion</text>` : ""}
+        ${short}
+        <text x="${cx}" y="${base + 18}" class="v-bal-label" text-anchor="middle">${esc(x.label)}</text>
+        ${x.note ? `<text x="${cx}" y="${base + 33}" class="v-tick" text-anchor="middle">${esc(x.note)}</text>` : ""}
+        ${i ? `<text x="${gw * i}" y="${top + PH / 2}" class="v-bal-arrow" text-anchor="middle" aria-hidden="true">→</text>` : ""}
+      </g>`;
+    }).join("");
+    const H = base + (v.states.some((x) => x.note) ? 42 : 28);
+    const first = v.states[0], last = v.states.at(-1), c = v.change;
+    const ref = Math.max(...v.states.map((x) => Math.abs(x.cushion)), 1e-9);
+    const meter = `<div class="v-bal-meter" role="list">${v.states.map((x) => `<div role="listitem"><span>${esc(x.label)}</span><span class="v-bal-track"><i class="${x.cushion < 0 ? "bad" : ""}" style="width:${Math.max(2, Math.min(100, (Math.abs(x.cushion) / ref) * 100))}%"></i></span><b>${x.cushion < 0 ? `short ${money(-x.cushion)}` : money(x.cushion)}</b></div>`).join("")}</div>`;
+    let takeaway = "";
+    if (c) {
+      const pct = c.cushionPct != null ? ` (${Math.round(Math.abs(c.cushionPct) * 100)}% of it)` : "";
+      takeaway = c.owes === 0 && c.owns < 0
+        ? `What it owes stays ${money(last.owes)}, so the whole ${money(-c.owns)} loss comes out of the cushion: ${money(first.cushion)} → ${money(last.cushion)}${pct}.`
+        : `Cushion: ${money(first.cushion)} → ${money(last.cushion)}${c.cushion < 0 ? `, down ${money(-c.cushion)}${pct}` : `, up ${money(c.cushion)}`}.`;
+      if (last.cushion < 0) takeaway += " It now owes more than it owns.";
+    } else takeaway = `Cushion = owns − owes = ${money(first.owns)} − ${money(first.owes)} = ${money(first.cushion)}.`;
+    return figure(v, `<svg viewBox="0 0 ${W} ${H}" class="v-svg v-bal" role="img" aria-label="${esc(v.text || v.alt || "")}">${groups}<line x1="4" x2="${W - 4}" y1="${base}" y2="${base}" class="v-guide"/></svg>
+      <p class="v-bal-key"><span class="v-sw v-bal-sw-own" aria-hidden="true"></span>Owns <span class="v-sw v-bal-sw-owe" aria-hidden="true"></span>Owes <span class="v-sw v-bal-sw-cush" aria-hidden="true"></span>Cushion (owns − owes)</p>
+      ${meter}
+      <p class="v-result v-bal-take">${takeaway} <span class="v-note">calculated by Lost</span></p>`, { note: v.simplified ? "Simplified example" : "" });
+  }
+
   // ---------- market: schematic supply and demand with one shift ----------
   function market(v) {
     const W = 320, H = 250, x0 = 46, x1 = 304, y0 = 14, y1 = 206;
@@ -243,7 +285,7 @@
       <p class="pv-sum">${v.places.filter((p) => p.value).map((p) => `<span>${p.value > 1 ? `${esc(p.digit)}×` : ""}${esc(num(p.weight))}</span>`).join(" + ") || "0"} = <b>${esc(num(v.total))}</b> <span class="v-note">calculated by Lost</span></p>`);
   }
 
-  const RENDER = { place_value: placeValue, zones, decision: (v) => layered(v, { decision: true }), concept_map: (v) => layered(v), tree: (v) => layered(v), process: processV, cause_effect: causeEffect, comparison, calculation, market, bit_grid: bitGrid, analogy };
+  const RENDER = { place_value: placeValue, zones, decision: (v) => layered(v, { decision: true }), concept_map: (v) => layered(v), tree: (v) => layered(v), process: processV, cause_effect: causeEffect, comparison, calculation, balance, market, bit_grid: bitGrid, analogy };
   L.visual = (v) => {
     if (!v || !RENDER[v.type]) return "";
     try { return RENDER[v.type](v); }
@@ -335,8 +377,7 @@
       head: `${kicker ? `<p class="lesson-kicker">${esc(kicker)}</p>` : ""}${showTitle && p.title ? `<${h} class="lesson-title">${esc(p.title)}</${h}>` : ""}`,
       explain: `${!p.enough && p.clarify ? `<p class="clarify">${esc(p.clarify)}</p>` : ""}
         ${p.hook ? `<p class="lesson-hook">${esc(p.hook)}</p>` : ""}
-        ${claim(p.takeaway, p.hook ? "lesson-takeaway small" : "lesson-takeaway")}
-        ${p.uncertainty ? `<p class="lesson-flag" role="note"><span class="unsure-mark" aria-hidden="true">!</span> ${esc(p.uncertainty)}</p>` : ""}`,
+        ${claim(p.takeaway, p.hook ? "lesson-takeaway small" : "lesson-takeaway")}`,
       example: p.example ? `<div class="lesson-example"><p class="lesson-label">${exampleLabel(p.example)}</p><p>${esc(p.example.text)}</p></div>` : "",
       visual: p.visual ? L.visual(p.visual) : "",
       illustration: (opts) => L.illustration(p, helpId, opts),
