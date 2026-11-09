@@ -270,30 +270,33 @@
 
   // The lesson card. Up front: the question (as the panel title), a hook, the idea in one line, one
   // picture, an example, and where it fits in class. "Explain more" holds the rest; "Sources" opens on demand.
-  // ---------- AI illustration: drawn only when the student asks, then kept for this page ----------
+  // ---------- AI illustration: drawn automatically for every card, then kept for this page ----------
   const illos = new Map(); // help id -> { url, caption, alt }
+  const illoLoading = new Map(); // help id -> promise, so re-renders share one request
+  const illoFailed = new Map(); // help id -> message
   const illoFigure = (d) => `<figure class="illo-fig"><img src="${esc(d.url)}" alt="${esc(d.alt)}" width="512" height="512" decoding="async">
       <figcaption><span class="illo-tag">AI illustration</span> ${esc(d.caption)}</figcaption></figure>`;
+  const illoRetry = (id, msg) => `<button type="button" class="illo-btn" data-illo="${esc(id)}">Try the illustration again</button><p class="illo-err" role="status">${esc(msg || "No illustration this time.")}</p>`;
+  const illoInner = (id) => illos.has(id) ? illoFigure(illos.get(id)) : illoFailed.has(id) ? illoRetry(id, illoFailed.get(id)) : `<div class="illo-skel" role="status" aria-label="Drawing a picture"></div>`;
+  function loadIllo(id) {
+    if (illos.has(id) || illoLoading.has(id)) return;
+    illoFailed.delete(id);
+    const paint = () => document.querySelectorAll(`[data-illo-box="${CSS.escape(id)}"]`).forEach((b) => { b.innerHTML = illoInner(id); });
+    const p = L.api(`/api/help/${encodeURIComponent(id)}/illustration`, { method: "POST", body: {} })
+      .then((d) => { illos.set(id, d); })
+      .catch((err) => { illoFailed.set(id, err.message); })
+      .finally(() => { illoLoading.delete(id); paint(); });
+    illoLoading.set(id, p);
+    paint();
+  }
   function illustration(p, helpId) {
     if (!p.illustration || !helpId || !L.illustrations) return "";
-    const done = illos.get(helpId);
-    return `<div class="illo" data-illo-box="${esc(helpId)}">${done ? illoFigure(done)
-      : `<button type="button" class="illo-btn" data-illo="${esc(helpId)}">Show illustration</button>`}</div>`;
+    if (!illos.has(helpId) && !illoFailed.has(helpId)) setTimeout(() => loadIllo(helpId), 0);
+    return `<div class="illo" data-illo-box="${esc(helpId)}">${illoInner(helpId)}</div>`;
   }
-  document.addEventListener("click", async (e) => {
+  document.addEventListener("click", (e) => {
     const b = e.target.closest("[data-illo]"); if (!b || b.disabled) return;
-    const id = b.dataset.illo, box = b.closest(".illo");
-    b.disabled = true; b.textContent = "Drawing…"; box.querySelector(".illo-err")?.remove();
-    b.insertAdjacentHTML("afterend", `<div class="illo-skel" aria-hidden="true"></div>`);
-    try {
-      const d = await L.api(`/api/help/${encodeURIComponent(id)}/illustration`, { method: "POST", body: {} });
-      illos.set(id, d);
-      box.innerHTML = illoFigure(d);
-    } catch (err) {
-      box.querySelector(".illo-skel")?.remove();
-      b.disabled = false; b.textContent = "Try the illustration again";
-      box.insertAdjacentHTML("beforeend", `<p class="illo-err" role="status">${esc(err.message || "No illustration this time.")}</p>`);
-    }
+    b.disabled = true; loadIllo(b.dataset.illo);
   });
 
   L.lesson = (raw, { kicker = "", headingLevel = 3, showTitle = true, helpId = "" } = {}) => {

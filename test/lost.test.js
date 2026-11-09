@@ -702,9 +702,10 @@ test("course art: professors pick from fixed sets; anything else is ignored", as
   assert.equal((await courseByCode(rivera, "CSC 311")).art, "computing", "unknown values fall back to the guess");
 });
 
-test("AI illustrations: on request only, prompt stays on the server, access checked, one call per card, failures keep the card", async () => {
+test("AI illustrations: drawn ahead for every card, prompt stays on the server, access checked, one call per card, failures keep the card", async () => {
   const img = await import("../lib/illustrate.js");
   process.env.IMAGE_USER_BURST = "1000";
+  process.env.IMAGE_PREDRAW = "0"; // this part checks the on-request path; drawing ahead is checked at the end
   ai.setFakeProvider(fakeAi); aiMode = "ok";
   const rivera = await as("prof"), jordan = await as("jordan"), riley = await as("riley");
   const { sid } = await liveSession(rivera);
@@ -796,7 +797,15 @@ test("AI illustrations: on request only, prompt stays on the server, access chec
   assert.equal(lim1.status, 200); assert.equal(lim2.status, 429); assert.match(lim2.data.error, /Wait a little/);
   assert.equal(calls.length, 7); // 1 drawn + 5 failure cases + 1 after the cap; the limited request never reached Cloudflare
 
-  for (const k of ["IMAGE_GENERATION_ENABLED", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN", "IMAGE_USER_BURST", "IMAGE_DAILY_MAX"]) delete process.env[k];
+  // Drawing ahead: a new card starts its picture without anyone asking, and the later request reuses it.
+  delete process.env.IMAGE_PREDRAW; process.env.IMAGE_USER_BURST = "1000";
+  const ahead = await fresh("prereq");
+  for (let i = 0; i < 50 && db.one("SELECT status FROM illustrations WHERE help_id = ?", ahead.id)?.status !== "ok"; i++) await new Promise((ok) => setTimeout(ok, 20));
+  assert.equal(db.one("SELECT status FROM illustrations WHERE help_id = ?", ahead.id).status, "ok");
+  assert.equal(calls.length, 8);
+  assert.equal((await jordan.post(`/api/help/${ahead.id}/illustration`)).status, 200); assert.equal(calls.length, 8);
+
+  for (const k of ["IMAGE_GENERATION_ENABLED", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN", "IMAGE_USER_BURST", "IMAGE_DAILY_MAX", "IMAGE_PREDRAW"]) delete process.env[k];
   img.setFetchForTests(null);
   await rivera.post(`/api/prof/sessions/${sid}/end`);
   ai.setFakeProvider(null);
