@@ -20,11 +20,11 @@
       ${courses.length ? `<ul class="course-grid">${courses.map((c) => `
         <li class="course-card">
           ${Lost.courseArt(c.art, c.id)}
-          <div class="cc-head"><span class="cc-code">${esc(c.code)}</span>${sourceBadge(c.source)}</div>
+          <div class="cc-head"><span class="cc-code">${esc(c.code)}</span>${c.source === "demo" ? sourceBadge(c.source) : ["failed", "partial"].includes(c.sync?.status) ? syncBadge(c.sync) : ""}</div>
           <h2><a href="#/course/${c.id}">${esc(c.name)}</a></h2>
           <p class="note">${c.sections.map((s) => `${esc(s.name)} · ${s.students} student${s.students === 1 ? "" : "s"}`).join("<br>")}</p>
-          <p class="cc-line">${c.source === "manual" ? `<span class="badge">Manual materials</span>` : syncBadge(c.sync)} <span class="note">${c.counts.total} material${c.counts.total === 1 ? "" : "s"}${c.sync?.lastSuccess ? `, synced ${ago(c.sync.lastSuccess)}` : ""}</span></p>
-          <p class="cc-line">${c.active ? `<span class="badge ${c.active.status === "live" ? "live" : ""}">${sessionLabel(c.active)}</span>` : c.recent ? `<span class="note">Last class ${when(c.recent.ended_at)} · ${c.recent.taps} taps</span>` : `<span class="note">No classes yet</span>`}</p>
+          ${c.active ? `<p class="cc-line"><span class="badge ${c.active.status === "live" ? "live" : ""}">${sessionLabel(c.active)}</span></p>` : c.recent?.taps ? `<p class="cc-line note">${c.recent.taps} tap${c.recent.taps === 1 ? "" : "s"} last class</p>` : ""}
+          ${c.counts.total ? "" : `<p class="cc-line note">No materials yet</p>`}
           <a class="button primary" href="#/course/${c.id}">${c.active?.status === "live" ? "Return to class" : "Open class"}</a>
         </li>`).join("")}</ul>` : `<div class="empty-state"><p>No courses yet.</p><a class="button primary" href="#/onboarding">Set up your first course</a></div>`}`;
   }

@@ -13,6 +13,19 @@
     return true;
   }
 
+  // The left-hand dashboard: every class, one click each. Shown on the classes page and each course page.
+  Lost.dash = (courses, currentId, body) => `<div class="dash">
+    <nav class="dash-side" aria-label="Your classes">
+      <a class="dash-link ${currentId ? "" : "on"}" href="#/" ${currentId ? "" : 'aria-current="page"'}><span class="dash-code">All classes</span></a>
+      ${courses.map((c) => `<a class="dash-link ${c.id === currentId ? "on" : ""}" href="${c.active?.status === "live" ? `#/live/${c.active.id}` : `#/course/${c.id}`}" ${c.id === currentId ? 'aria-current="page"' : ""}>
+        <span class="dash-code">${esc(c.code)}${c.active?.status === "live" ? ` <span class="dot live" aria-label="live now"></span>` : ""}</span>
+        <span class="dash-name">${esc(c.name)}</span>
+        ${c.stats?.unresolved ? `<span class="dash-count" title="Open lost moments">${c.stats.unresolved}</span>` : ""}
+      </a>`).join("")}
+    </nav>
+    <div class="dash-main">${body}</div>
+  </div>`;
+
   // ================= home =================
   async function home(app, _, params) {
     if (params.canvas) toast(params.canvas === "ok" ? "Canvas linked. Your classes are matched to your sections." : `Canvas: ${params.canvas}`, params.canvas === "ok" ? "" : "error");
@@ -25,7 +38,7 @@
       if (now.length === 1) enterLive(now[0].active.id);
       else if (now.length > 1 || r.courses.length !== courses.length) Lost.render();
     }, 3000);
-    app.innerHTML = `
+    app.innerHTML = Lost.dash(courses, "", `
       <h1>Your classes</h1>
       ${live.map((c) => `<a class="live-banner" href="#/live/${c.active.id}"><span class="dot live" aria-hidden="true"></span><span><b>${esc(c.code)} is live now</b><span>${esc(c.section_name)} · tap to enter today's class</span></span></a>`).join("")}
       ${courses.length ? `<ul class="course-grid">${courses.map((c) => `
@@ -33,12 +46,14 @@
           ${Lost.courseArt ? Lost.courseArt(c.art, c.id) : ""}
           <div class="cc-head"><span class="cc-code">${esc(c.code)}</span>${c.source === "demo" ? `<span class="badge warn">Demo course</span>` : ""}</div>
           <h2><a href="#/course/${c.id}">${esc(c.name)}</a></h2>
-          <p class="note">${esc(c.section_name)}</p>
-          <p class="cc-line">${c.active?.status === "live" ? `<span class="badge live">Live now</span>` : c.last ? `<span class="note">Last class ${when(c.last.ended_at)}${c.last.summary === "ready" ? " · summary ready" : ""}</span>` : `<span class="note">No lectures yet</span>`}</p>
-          ${c.stats.unresolved ? `<p class="note">${c.stats.unresolved} moment${c.stats.unresolved === 1 ? "" : "s"} still unresolved</p>` : ""}
-          ${c.active?.status === "live" ? `<a class="button gold" href="#/live/${c.active.id}">Enter today's class</a>` : `<a class="button" href="#/course/${c.id}">Open course</a>`}
-        </li>`).join("")}</ul>` : `<div class="empty-state"><p>No classes yet. They show up here once your university connects them.</p></div>`}
-`;
+          ${c.active?.status === "live" ? `<p class="cc-line"><span class="badge live">Live now</span></p>` : ""}
+          ${c.recap?.idea ? `<div class="cc-recap"><span class="cc-label">Last time</span><p class="cc-idea">${esc(c.recap.idea)}</p></div>` : ""}
+          ${c.stats.total ? `<div class="cc-me" title="Lines you tapped in this course, and how many you've cleared">
+              <span class="cc-meter" aria-hidden="true"><i style="width:${Math.round(100 * c.stats.resolved / c.stats.total)}%"></i></span>
+              <span>${c.stats.resolved} of ${c.stats.total} cleared</span>
+            </div>` : ""}
+          ${c.active?.status === "live" ? `<a class="button gold" href="#/live/${c.active.id}">Enter today's class</a>` : c.stats.unresolved ? `<a class="button primary" href="#/course/${c.id}">Clear ${c.stats.unresolved} open</a>` : `<a class="button" href="#/course/${c.id}">Open course</a>`}
+        </li>`).join("")}</ul>` : `<div class="empty-state"><p>No classes yet. They show up here once your university connects them.</p></div>`}`);
     const link = async (mode) => {
       if (!st.institutionId) await api("/api/canvas/institution", { method: "POST", body: { institutionId: st.institutions[0].id } });
       const r = await api("/api/canvas/connect", { method: "POST", body: { mode } });
@@ -72,37 +87,32 @@
   // ================= course =================
   const catName = (k) => ({ term: "A term", reasoning: "A reasoning step", connection: "A connection", missed: "Missed what was said" }[k] || "");
   async function course(app, [id]) {
-    const d = await api(`/api/student/courses/${id}`);
+    const [d, { courses: all }] = await Promise.all([api(`/api/student/courses/${id}`), api("/api/student/courses")]);
     if (d.active?.status === "live" && enterLive(d.active.id)) return;
     if (!d.active) Lost.poll(async (signal) => {
       const n = await api(`/api/student/courses/${id}`, { signal });
       if (n.active?.status === "live") enterLive(n.active.id) || Lost.render();
     }, 3000);
-    const c = d.course, s = d.stats;
-    app.innerHTML = `
-      <p class="crumb"><a href="#/">Your classes</a></p>
+    const c = d.course;
+    // Only the lost history: each moment shows the line it happened on, then the help card that
+    // explains it (with its diagram or picture). Open moments come first.
+    const moments = [...d.history].sort((a, b) => (a.self_status === "resolved") - (b.self_status === "resolved"));
+    app.innerHTML = Lost.dash(all, c.id, `
       <h1>${esc(c.code)} ${esc(c.name)}</h1>
-      <p class="note">${esc(c.section)}${c.term ? ` · ${esc(c.term)}` : ""}</p>
       ${d.active ? `<a class="live-banner" href="#/live/${d.active.id}"><span class="dot live" aria-hidden="true"></span><span><b>Class is live</b><span>Enter today's class</span></span></a>` : ""}
-      <section class="panel">
-        <h2>Your progress in this course</h2>
-        <dl class="stat-row">
-          <div><dt>I'm lost moments</dt><dd>${s.total}</dd><p class="note">Times you tapped I'm lost.</p></div>
-          <div><dt>Marked resolved</dt><dd>${s.resolved}</dd><p class="note">You pressed "That helped". Opening or closing a card doesn't count.</p></div>
-          <div><dt>Still open</dt><dd>${s.unresolved}</dd><p class="note">Not marked resolved yet.</p></div>
-          <div><dt>Checks answered right</dt><dd>${s.checksPassed}${s.checksAnswered ? ` <span class="note">of ${s.checksAnswered}</span>` : ""}</dd><p class="note">Understanding and review questions you got right.</p></div>
-        </dl>
-        <p class="note">These are for you, not grades. They count taps and answers; they don't measure how good you are at the subject.</p>
-        ${s.unresolvedTopics.length ? `<h3>Topics still open</h3><ul class="chips">${s.unresolvedTopics.map((t) => `<li>${esc(t.topic)}${t.n > 1 ? ` ×${t.n}` : ""}</li>`).join("")}</ul>` : ""}
-      </section>
-      <section class="panel"><h2>Past classes</h2>
-        ${d.sessions.filter((x) => x.status === "ended").length ? `<ul class="plain list-rows">${d.sessions.filter((x) => x.status === "ended").map((x) => `
-          <li><a href="#/session/${x.id}"><b>${when(x.started_at)}</b>${x.title ? ` · ${esc(x.title)}` : ""}</a>
-          <span class="note">${x.published ? (x.summary === "ready" ? "Summary ready" : "Transcript available") : "Summary not ready yet"}${x.my_taps ? ` · you tapped ${x.my_taps} time${x.my_taps === 1 ? "" : "s"}` : ""}</span></li>`).join("")}</ul>` : `<p class="empty-state">No finished classes yet.</p>`}
-      </section>
-      ${d.history.length ? `<section class="panel"><h2>Your I'm lost history</h2><ul class="plain list-rows">${d.history.map((h) => `
-        <li><a href="#/session/${h.session_id}#ev-${h.id}">${when(h.started_at)} at ${fmt(h.t)}</a> <span class="note">${h.topic ? esc(h.topic) : "Topic not labelled"}${h.category ? ` · ${catName(h.category)}` : ""} · ${h.self_status === "resolved" ? "resolved" : "open"}</span></li>`).join("")}</ul></section>` : ""}
-      ${c.office_hours_url || c.tutoring_url ? `<section class="panel"><h2>Help outside class</h2><p class="note">Links added by your professor.</p><ul class="plain">${safeUrl(c.office_hours_url) ? `<li><a href="${esc(c.office_hours_url)}" target="_blank" rel="noopener">Office hours</a></li>` : ""}${safeUrl(c.tutoring_url) ? `<li><a href="${esc(c.tutoring_url)}" target="_blank" rel="noopener">Tutoring</a></li>` : ""}</ul></section>` : ""}`;
+      <h2 class="lost-h">Where you got lost</h2>
+      ${moments.length ? `<ol class="lost-list">${moments.map((h) => `
+        <li class="lost-item ${h.self_status === "resolved" ? "done" : "open"}">
+          <div class="lost-where">
+            <p class="lost-meta"><span class="lost-state">${h.self_status === "resolved" ? "Cleared" : "Still open"}</span>
+              <a href="#/session/${h.session_id}#ev-${h.id}">${when(h.started_at)} at ${fmt(h.t)}</a></p>
+            <blockquote class="lost-line">${esc(h.line || h.interim_text || "A moment with no line caught")}</blockquote>
+            ${h.topic ? `<p class="lost-q">${esc(h.topic)}</p>` : ""}
+          </div>
+          <div class="lost-help">${h.card ? Lost.lesson(h.card.payload, { headingLevel: 3, helpId: h.card.id })
+            : `<p class="note">No explanation was made for this one. <a href="#/session/${h.session_id}#ev-${h.id}">Open the class</a> to see what was said around it.</p>`}</div>
+        </li>`).join("")}</ol>`
+      : `<div class="empty-state"><p>Nothing yet. When you tap a line in class, it lands here with a picture that explains it.</p></div>`}`);
   }
 
   // ================= live class =================

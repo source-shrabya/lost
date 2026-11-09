@@ -793,3 +793,47 @@ button:disabled { opacity: 1; color: var(--soft); background: transparent; borde
   .more-help { gap: 6px; }
   .more-help button { padding: 7px 10px; }
 }
+
+/* Class cards: last class recap, words to come, personal progress */
+.cc-recap { margin: 8px 0 10px; padding: 10px 12px 12px; border-left: 4px solid var(--gold); background: var(--gold-wash); border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+.cc-recap.preview { border-left-style: dashed; }
+.cc-label { display: block; font-size: 12px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--gold-ink); margin-bottom: 4px; }
+.cc-idea { margin: 0 0 8px; font-size: 16px; line-height: 1.4; font-weight: 600; color: var(--ink); text-wrap: pretty; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.cc-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.cc-chips li { font-size: 13px; padding: 3px 10px; border-radius: var(--r-pill); background: var(--panel); border: 1px solid var(--rule); color: var(--ink); }
+.cc-me { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; font-size: 14px; color: var(--soft); font-variant-numeric: tabular-nums; }
+.cc-meter { flex: 0 0 72px; height: 8px; border-radius: var(--r-pill); background: var(--rule); overflow: hidden; }
+.cc-meter i { display: block; height: 100%; background: var(--gold); border-radius: inherit; }
+
+/* Student course page: where you got lost, each moment with the card that explains it */
+.lost-h { margin: 18px 0 12px; }
+.lost-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 18px; }
+.lost-item { display: grid; grid-template-columns: minmax(0, 300px) minmax(0, 1fr); gap: 20px; background: var(--panel); border: 1.5px solid var(--rule); border-radius: var(--r); padding: 18px; }
+.lost-item.open { border-color: var(--gold); }
+.lost-where { position: sticky; top: 16px; align-self: start; }
+.lost-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 14px; }
+.lost-state { font-size: 12px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; padding: 2px 10px; border-radius: var(--r-pill); background: var(--good-wash); color: var(--good); }
+.lost-item.open .lost-state { background: var(--gold-wash); color: var(--gold-ink); }
+.lost-line { margin: 0; padding: 10px 12px; border-left: 4px solid var(--gold); background: var(--gold-wash); border-radius: 0 var(--r-sm) var(--r-sm) 0; font-size: 17px; line-height: 1.45; color: var(--ink); }
+.lost-q { margin: 10px 0 0; color: var(--soft); font-size: 15px; }
+.lost-help .lesson { margin: 0; }
+@media (max-width: 760px) { .lost-item { grid-template-columns: 1fr; } .lost-where { position: static; } }
+
+/* Student dashboard: class list on the left, page on the right, full width */
+body.student main:has(.dash) { max-width: none; padding: 20px 24px 64px; }
+.dash { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; align-items: start; }
+.dash-side { position: sticky; top: 16px; display: flex; flex-direction: column; gap: 2px; padding: 8px; background: var(--panel); border: 1.5px solid var(--rule); border-radius: var(--r); }
+.dash-link { display: grid; grid-template-columns: 1fr auto; column-gap: 8px; padding: 8px 10px; border-radius: var(--r-sm); color: var(--ink); text-decoration: none; }
+.dash-link:hover { background: var(--paper); }
+.dash-link.on { background: var(--gold-wash); box-shadow: inset 3px 0 0 var(--gold); }
+.dash-code { font-weight: 800; font-size: 14px; letter-spacing: .03em; }
+.dash-name { grid-column: 1; font-size: 13px; color: var(--soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dash-count { grid-column: 2; grid-row: 1 / span 2; align-self: center; min-width: 22px; height: 22px; padding: 0 6px; border-radius: var(--r-pill); background: var(--gold); color: #1a1a1a; font-size: 12px; font-weight: 800; display: grid; place-items: center; }
+.dash-main > h1:first-child { margin-top: 0; }
+.dash .cc-idea { -webkit-line-clamp: 2; font-size: 15px; }
+@media (max-width: 760px) {
+  .dash { grid-template-columns: 1fr; gap: 14px; }
+  .dash-side { position: static; flex-direction: row; overflow-x: auto; padding: 6px; }
+  .dash-link { flex: 0 0 auto; }
+  .dash-name { display: none; }
+}

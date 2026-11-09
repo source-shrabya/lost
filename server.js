@@ -525,13 +525,23 @@ route("POST", "/api/prof/courses/:id/materials", async (ctx) => {
 }, { raw: true });
 
 // --- student ---
+// The big idea of a class summary, for the student's class card.
+function recapOf(payload) {
+  try {
+    const s = JSON.parse(payload)?.shared || {};
+    const idea = String(s.topics?.[0]?.key_idea?.text || s.overview?.text || "").trim();
+    return idea ? { idea: idea.slice(0, 220) } : null;
+  } catch { return null; }
+}
 function studentCourses(u) {
   return all(`SELECT c.id, c.name, c.code, c.term, c.source, c.art, c.terms, s.id section_id, s.name section_name, e.source enrolled_by
     FROM enrollments e JOIN sections s ON s.id = e.section_id JOIN courses c ON c.id = s.course_id WHERE e.user_id = ? ORDER BY c.code`, u.id).map((c) => {
     const active = one("SELECT id, title, status, started_at FROM lecture_sessions WHERE section_id = ? AND status IN ('live', 'ending') LIMIT 1", c.section_id);
-    const last = one(`SELECT s.id, s.title, s.ended_at, ss.status summary FROM lecture_sessions s LEFT JOIN session_summaries ss ON ss.session_id = s.id
+    const last = one(`SELECT s.id, s.title, s.ended_at, ss.status summary, ss.published, ss.payload FROM lecture_sessions s LEFT JOIN session_summaries ss ON ss.session_id = s.id
       WHERE s.section_id = ? AND s.status = 'ended' ORDER BY s.ended_at DESC LIMIT 1`, c.section_id);
-    return { ...c, art: courseArt(c), terms: undefined, active, last, stats: summary.studentStats(u.id, c.id) };
+    const recap = last?.summary === "ready" && last.published ? recapOf(last.payload) : null;
+    if (last) { delete last.payload; delete last.published; }
+    return { ...c, art: courseArt(c), terms: undefined, active, last, recap, stats: summary.studentStats(u.id, c.id) };
   });
 }
 route("GET", "/api/student/courses", (ctx) => {
@@ -559,8 +569,17 @@ route("GET", "/api/student/courses/:id", (ctx) => {
   const sessions = all(`SELECT s.id, s.title, s.status, s.started_at, s.ended_at, ss.status summary, ss.published,
       (SELECT COUNT(*) FROM confusion_events e WHERE e.session_id = s.id AND e.student_id = ?) my_taps
     FROM lecture_sessions s LEFT JOIN session_summaries ss ON ss.session_id = s.id WHERE s.section_id = ? AND s.status != 'ready' ORDER BY s.created_at DESC LIMIT 40`, u.id, c.section_id);
-  const history = all(`SELECT e.id, e.session_id, e.t, e.topic, e.category, e.self_status, s.started_at FROM confusion_events e JOIN lecture_sessions s ON s.id = e.session_id
-    WHERE e.student_id = ? AND s.course_id = ? ORDER BY e.created_at DESC LIMIT 50`, u.id, c.id);
+  const history = all(`SELECT e.id, e.session_id, e.t, e.topic, e.category, e.self_status, e.interim_text, s.started_at, s.title session_title,
+      (SELECT text FROM transcript_lines l WHERE l.session_id = e.session_id AND l.idx = COALESCE(e.anchor_line, e.line_idx)) line
+    FROM confusion_events e JOIN lecture_sessions s ON s.id = e.session_id
+    WHERE e.student_id = ? AND s.course_id = ? ORDER BY e.created_at DESC LIMIT 30`, u.id, c.id).map((h) => {
+    // The card that explains this moment: the first explanation (it answers the tapped line; later
+    // "another way" cards can drift), else the first card with a diagram or picture, else the first card.
+    const cards = all("SELECT id, kind, payload FROM help_responses WHERE event_id = ? AND kind != 'catchup' AND status = 'ok' ORDER BY created_at", h.id)
+      .map((r) => { try { return { id: r.id, kind: r.kind, payload: JSON.parse(r.payload) }; } catch { return null; } }).filter(Boolean);
+    const card = cards.find((k) => k.kind === "explain") || cards.find((k) => k.payload?.visual || k.payload?.illustration) || cards[0] || null;
+    return { ...h, card };
+  });
   return { course: { id: c.id, name: c.name, code: c.code, term: c.term, section: c.section_name, office_hours_url: c.office_hours_url, tutoring_url: c.tutoring_url },
     active: sessions.find((s) => s.status === "live" || s.status === "ending") || null, sessions, history, stats: summary.studentStats(u.id, c.id) };
 });
